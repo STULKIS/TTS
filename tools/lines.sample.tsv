@@ -1,0 +1,14 @@
+# lines.sample.tsv — tab-separated: id <TAB> char_id <TAB> lang <TAB> text
+# Render:
+#   python tools/render_batch.py --lines lines.sample.tsv \
+#          --model_dir pretrained_models/Fun-CosyVoice3-0.5B
+# Drop a 3-10 s clip + its exact transcript at seeds/<char_id>/<lang>.wav / .txt
+# ja lines: pre-convert to spaced katakana for CosyVoice3 (see my-tts-plan.corrected.md)
+dragon-01	dragon	en	The fate of this world was never already written.
+dragon-02	dragon	en	I have watched colder centuries than yours end over a single cup of tea.
+dragon-03	dragon	zh	这个世界的命运，还没有定数。
+dragon-04	dragon	zh	我说话很慢，但你最好听完。
+dragon-05	dragon	ja	コノ セカイ ノ ウンメイ ワ、マダ カタラレテ モ イナイ ホノ イチ ペン ニ スギナイ。
+dragon-06	dragon	ko	세상의 운명은 아직 정해지지 않았다.
+drake-01	drake	en	You kept me waiting. That was your first mistake.
+drake-02	drake	en	I do not repeat myself. I repeat *you*, badly, for comic effect.
