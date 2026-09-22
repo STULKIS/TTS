@@ -18,6 +18,7 @@ Working notes for a fully-local, legally-clean character-voice pipeline (en · z
 | `tools/preflight.py` | Pre-flight checker: GPT-SoVITS root, CPU config, pretrained weights, seed-pack integrity, ports, disk — one command before your first render. |
 | `tools/lines.sample.tsv` | Example manifest (2 characters × en/zh/ja/ko) — works with both renderers. |
 | `seeds/` | The seed packs: dragon & drake, 5 lines × en/zh/ja/ko each (44.1 kHz mono WAV + verbatim transcripts). Voice briefs in `seeds/README.md`. |
+| `VOICE-PRESETS.md` | 110 named voice presets in 10 groups (mommy, daddy, noir detective, movie-trailer voice, …) — request any by name in chat. |
 
 Fast path: design voices in chat → save 3–10 s clips as `seeds/<char>/<lang>.wav` (the
 packs for **dragon** and **drake** already ship in `seeds/`) → validate with

@@ -143,13 +143,14 @@ API with the trained model.
 ## 4. Voice features (age, wetness/dryness, breath…) + presets
 
 Features are **timbre properties** — set at design time, baked into the reference
-clips, not render-time flags. The full 19-feature vocabulary (age, wetness↔dryness,
-roughness, breathiness, nasality, resonance, pitch, pitch variety, warmth, smile tone,
-rate, energy, articulation, steadiness, intimacy, volume, emotion, exaggeration,
-gender presentation) plus **named presets — mommy, daddy, cold villain, genki little
-sister, strict senpai, lazy/bored, gravelly veteran, tsundere, …** — live in
-`seeds/README.md` ("Voice features" + "Voice presets"). Request any of them in chat:
-*"a mommy voice for a new character"*, *"make drake drier"*. Current values:
+clips, not render-time flags. The full **58-feature vocabulary** (physical/texture,
+delivery, emotion/personality, quirks — age, wetness↔dryness, smokiness, vocal fry,
+nasality, resonance, smile tone, deadpan, sarcasm, keigo-level politeness, laugh
+style, stutter, accents, …) plus **110 named presets in 10 groups** —
+mommy, daddy, cold CEO, tsundere, ancient dragon, noir detective, movie-trailer
+voice, … — live in `seeds/README.md` (features) and **`VOICE-PRESETS.md`** (catalog).
+Request any of them in chat: *"a mommy voice for a new character"*,
+*"make drake drier"*. Current values:
 
 - **dragon** — ancient · dry-warm · solid · low · glacial · calm
 - **drake** — middle-aged · dry/papery · solid · mid-low · brisk · volatile-but-controlled

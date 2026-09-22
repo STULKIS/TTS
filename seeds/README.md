@@ -32,60 +32,51 @@ manifest requires at least `<lang>.wav` per char/lang the manifest uses.
 Session notes: voices were picked by audition (English, `use_case: characters`), then the same
 speakers were reused for zh/ja/ko via the per-call language override.
 
-## Voice features (design vocabulary)
+## Voice features (design vocabulary) — 58 scales
 
-Features are properties of the **timbre** — they are set *at design time* (in-chat audition) and
+Features are properties of the **timbre/manner** — set *at design time* (in-chat audition) and
 baked into the reference clips. Render-time channels can only steer *style* (rate/volume/emotion),
 so "a drier voice" = regenerate the clips, not a render flag. Say any value out loud —
 *"make drake drier"*, *"dragon but younger"* — and the affected char/lang set gets re-auditioned.
 
-| Feature | Scale |
-|---|---|
-| age | child → teen → young adult → middle-aged → elderly → ancient |
-| gender presentation | feminine ↔ masculine ↔ androgynous |
-| wetness ↔ dryness | moist, gurgly, saturated ↔ dry, papery, raspy |
-| roughness | smooth/silky ↔ gritty/gravelly |
-| breathiness | solid ↔ airy |
-| nasality | open ↔ nasal |
-| resonance | bright head ↔ deep chest |
-| pitch | low ↔ high |
-| pitch variety | monotone ↔ big lively intonation |
-| warmth | cold/clinical ↔ warm/humming |
-| smile tone | flat/serious ↔ smiling |
-| rate | glacial ↔ brisk |
-| energy | laid-back ↔ high-energy |
-| articulation | slurred/drawled ↔ crisp/precise |
-| steadiness | wobbly/trembling ↔ rock-steady |
-| intimacy | distant/broadcast ↔ close-mic intimate |
-| volume | whisper ↔ projecting |
-| emotion baseline | calm ↔ volatile |
-| exaggeration | subdued/natural ↔ dramatic/over-acted |
+**Physical / texture** (baked into the voice):
+age (child → ancient) · gender presentation · voice weight (thin ↔ full) · pitch ·
+pitch variety (monotone ↔ big intonation) · wetness↔dryness · roughness (silky ↔ gravelly) ·
+smokiness · breathiness · reediness · velvety · vocal fry · voice cracks · nasality ·
+resonance (head ↔ chest) · brightness (dark ↔ crystalline) · placement (front ↔ back) ·
+vowel openness
+
+**Delivery / dynamics** (how it's spoken):
+rate · volume · intimacy (distant ↔ close-mic) · energy · steadiness (wobbly ↔ rock-steady) ·
+articulation (slurred ↔ crisp) · mumble · rhythm (staccato ↔ flowing) · pausing (rattling ↔
+thoughtful) · emphasis · sentence endings (falling ↔ rising ↔ trailing) · drawn-out vowels ·
+dynamics (flat ↔ big swells)
+
+**Emotion / personality** (mood coloring):
+emotion baseline · warmth · smile tone · seductiveness · authority (timid ↔ commanding) ·
+playfulness · menace · composure · softness (hard ↔ vulnerable) · sharpness · confidence ·
+anxiety · tiredness (wide-awake ↔ sleepy) · melancholy · smugness · sarcasm ·
+deadpan · theatricality · formality (slang ↔ stiff) · politeness (blunt ↔ ultra-polite / keigo)
+
+**Quirks & special** (character flavor):
+laugh style (giggle · chuckle · cackle · snort) · sigh style · verbal tics ("heh", "hmph",
+catchphrases) · speech quirks (light stutter · lisp) · accent (none · regional — 18 CN dialects
+validated on CosyVoice · foreign/L2) · muttering tendency · whisper register
 
 Render-time nudges (CosyVoice `--instruct`, the *validated* subset only): rate
 (fastest/slowest), volume ("as loudly as possible" / "very soft voice"), emotion
 (very happy/sad/angry), dialects, robot style. Everything else above is design-time.
 
-## Voice presets (named archetypes)
+## Voice presets — 110 named archetypes
 
-A preset is just a feature bundle with a name — the fastest way to design. Request one with
-*"a **<preset>** voice for <character>"* (new character) or *"re-voice <character> as <preset>"*.
+**Full catalog: [`VOICE-PRESETS.md`](../VOICE-PRESETS.md)** — 110 presets in 10 groups:
+parental & familial (10), romance (12), gacha hero & combat (14), mystic & supernatural (12),
+work & society (12), comedy (10), fantasy races & roles (10), CJK culture (10),
+special & weird (10), film & radio (10).
 
-| Preset | Feature bundle |
-|---|---|
-| **mommy** | warm · soft · mid pitch · slight smile · slow · steady · intimate |
-| **daddy** | low · deep chest resonance · dry · slow · serious · rock-steady |
-| **cold villain** | low · resonant · dry · glacial · sneer-smile · dramatic |
-| **genki little sister** | high · bright head · big intonation · fast · high-energy · smiling |
-| **strict senpai** | mid-low · dry · crisp · near-monotone · distant · slow |
-| **elegant mature lady** | mid-low · smooth · warm · measured · polished · even |
-| **lazy / bored** | low-energy · slow · slight slur · dry · flat |
-| **gravelly veteran** | low · gritty · dry · slow · worn |
-| **child** | high · bright · big intonation · high-energy · airy |
-| **elderly** | aged · slower · lower energy · slight breathiness |
-| **radio host** | warm · resonant · even pace · projecting · polished |
-| **whispery intimate** | soft · airy · close-mic · low volume · slow |
-| **tsundere** | mid · crisp · fast · volatile · biting |
-| **ancient sage** | ancient · dry-warm · glacial · low · calm *(= current dragon)* |
+Request any of them in chat: *"new character with a **mommy** voice"*,
+*"re-voice drake as **noir detective**"*, or mix: *"**daddy** but **drier**, a touch **gravelly**."*
+Not on the list? Describe it with the features (or in plain words) → it becomes a custom preset.
 
 Current values:
 
