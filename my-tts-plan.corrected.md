@@ -4,7 +4,7 @@
 
 Your requirements: local TTS · original character voices (no VA cloning) ·
 English, Chinese, Japanese, Korean · Windows PC without NVIDIA GPU.
-Companion to local-tts-guide.md (the general reference — still TODO).
+Companion to local-tts-guide.md (the general reference — GPT-SoVITS Colab training → CPU inference).
 
 The stack at a glance
 Tier    Tool                      What it gives you                                        Needs GPU?
@@ -188,9 +188,10 @@ Any NVIDIA GPU (used RTX 3060 12GB is the sweet spot)
 
 Dedicated character models
   → GPT-SoVITS (MIT, ~60k stars): zero-shot from 5 s, fine-tune from ~1 min of audio,
-    en/ja/ko/yue/zh; train in free Colab, infer at home on CPU (RTF ~0.03 on GPU; CPU is
-    usable for batch). UI: python webui.py en_US. Pick v2Pro/v2ProPlus for cross-lingual quality.
-    See local-tts-guide.md for the full dataset/slicer/ASR-labeling workflow (TODO).
+    en/ja/ko/yue/zh; train in free Colab, infer at home on CPU (RTF 0.014-0.028 on modern RTX
+    GPUs, ~0.5 on an Apple M4 CPU → CPU batch rendering is realistic). UI: python webui.py en_US.
+    Pick v2Pro/v2ProPlus for cross-lingual quality. See local-tts-guide.md for the full
+    dataset/slicer/ASR-labeling workflow.
 
 Quick decision cheat-sheet
 Want a voice NOW, zero setup........ ask this chat (audition + seed pack)
