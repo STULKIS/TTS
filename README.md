@@ -6,10 +6,13 @@ Working notes for a fully-local, legally-clean character-voice pipeline (en · z
 |---|---|
 | `my-tts-plan.corrected.md` | The plan itself, fact-checked and command-by-command corrected. Start here. |
 | `tts-plan-review.md` | Every diff vs. the original draft, with severity, evidence, and sources. |
-| `tools/render_batch.py` | CPU batch renderer: registers each character's seed clip as a named speaker, renders a `.tsv` manifest. |
-| `tools/lines.sample.tsv` | Example manifest (2 characters × en/zh/ja/ko). |
-| `local-tts-guide.md` | *TODO* — general reference (GPT-SoVITS Colab training → CPU inference, dataset prep). |
+| `local-tts-guide.md` | General reference — GPT-SoVITS: version map, free-Colab training, dataset prep, CPU inference (+CPUFast fork). |
+| `tools/render_batch.py` | CPU batch renderer (CosyVoice path): registers each character's seed clip as a named speaker, renders a `.tsv` manifest. |
+| `tools/render_batch_gsv.py` | Batch renderer (GPT-SoVITS path): same manifest, hot-swaps per-character fine-tuned models via `api_v2`. |
+| `tools/lines.sample.tsv` | Example manifest (2 characters × en/zh/ja/ko) — works with both renderers. |
 
 Fast path: design voices in chat → save 3–10 s clips as `seeds/<char>/<lang>.wav` → `render_batch.py`.
+For a dedicated per-character model instead (better consistency over hundreds of lines), fine-tune
+GPT-SoVITS v2ProPlus on free Colab and render with `render_batch_gsv.py` — see `local-tts-guide.md`.
 Hardware rule: reference-clip cloning runs on CPU (slowly); text→timbre *design* (Qwen3-TTS
 1.7B-VoiceDesign) needs ~8 GB of CUDA VRAM.

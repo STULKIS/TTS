@@ -2,7 +2,7 @@
 
 Reviewed **2026-09-20** against upstream sources (CosyVoice `main`, `example.py`, `cosyvoice/cli/cosyvoice.py`,
 `webui.py`, `requirements.txt`, CosyVoice3 model card, Qwen3-TTS repo, HF model trees).
-Companion: `my-tts-plan.corrected.md`. General reference: `local-tts-guide.md` (still missing — see bottom).
+Companion: `my-tts-plan.corrected.md`. General reference: `local-tts-guide.md` (written 2026-09-22 — see bottom).
 
 ## TL;DR verdict
 
@@ -70,8 +70,11 @@ cosyvoice.inference_zero_shot(text, '', '', zero_shot_spk_id='dragon')
 - GPT-SoVITS (MIT, 5 s zero-shot / 1 min few-shot, en·ja·ko·yue·zh) — https://github.com/RVC-Boss/GPT-SoVITS
 - CV3 GGUF community runtime (CPU-friendly, quantized) — https://huggingface.co/cstr/cosyvoice3-0.5b-2512-GGUF
 
-## Still missing in the repo
+## Follow-up (added 2026-09-22)
 
-`local-tts-guide.md` is referenced as the companion reference but doesn't exist (repo contains only a
-1-line `README.md`). Say the word and I'll write it — GPT-SoVITS Colab→CPU-inference workflow, dataset
-prep, and the character-model pipeline.
+The `local-tts-guide.md` flagged as missing above has been written: GPT-SoVITS version map (why
+v2ProPlus over v3/v4), free-Colab training workflow, dataset prep (slicer/ASR/subfix), CPU
+inference incl. the official README's RTF numbers (0.526 on an Apple M4 CPU) and the
+CPU-optimized `GPT-SoVITS-CPUFast` fork. Complemented by `tools/render_batch_gsv.py`, which
+renders the same TSV manifest as `render_batch.py` against a GPT-SoVITS `api_v2` server with
+per-character model hot-swap. All claims re-verified against GPT-SoVITS `main` on 2026-09-22.

@@ -1,7 +1,9 @@
 # lines.sample.tsv — tab-separated: id <TAB> char_id <TAB> lang <TAB> text
-# Render:
+# Render (CosyVoice path):
 #   python tools/render_batch.py --lines lines.sample.tsv \
 #          --model_dir pretrained_models/Fun-CosyVoice3-0.5B
+# Render (GPT-SoVITS path, needs fine-tuned per-character models — see local-tts-guide.md):
+#   python tools/render_batch_gsv.py --lines lines.sample.tsv --dry-run
 # Drop a 3-10 s clip + its exact transcript at seeds/<char_id>/<lang>.wav / .txt
 # ja lines: pre-convert to spaced katakana for CosyVoice3 (see my-tts-plan.corrected.md)
 dragon-01	dragon	en	The fate of this world was never already written.
