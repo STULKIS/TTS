@@ -29,6 +29,11 @@ def load_tool(name: str, filename: str):
 CHECK_SEEDS = load_tool("check_seeds", "check_seeds.py")
 JA_KATAKANA = load_tool("ja_katakana", "ja_katakana.py")
 GSV = load_tool("render_batch_gsv", "render_batch_gsv.py")
+# Loading render_batch proves it stays importable without torch/cosyvoice installed
+# (heavy deps are lazy — see --dry-run).
+SHOWCASE = load_tool("make_showcase", "make_showcase.py")
+DIALOGUE = load_tool("dialogue2tsv", "dialogue2tsv.py")
+RENDER_BATCH = load_tool("render_batch", "render_batch.py")
 
 
 def write_wav(path: Path, *, rate: int = 24_000, seconds: float = 4,
@@ -256,6 +261,157 @@ class GsvToolTests(unittest.TestCase):
                 character / "sovits.pth",
             )
             self.assertIsNone(GSV.find_model(models, "Mio", ("gpt.ckpt",)))
+
+
+class MakeShowcaseTests(unittest.TestCase):
+    def _pack(self, seeds: Path) -> None:
+        rin = seeds / "Rin"
+        rin.mkdir(parents=True)
+        write_wav(rin / "en.wav")
+        (rin / "en.txt").write_text("Hello world", encoding="utf-8")
+        write_wav(rin / "en2.wav", seconds=5)
+        (rin / "en2.txt").write_text("Second line", encoding="utf-8")
+        write_wav(rin / "ja.wav")
+        (rin / "ja.txt").write_text("こんにちは", encoding="utf-8")
+        mio = seeds / "Mio"
+        mio.mkdir()
+        write_wav(mio / "ko.wav")
+        (mio / "ko.txt").write_text("안녕", encoding="utf-8")
+
+    def test_page_has_players_transcripts_and_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            seeds = root / "seeds"
+            self._pack(seeds)
+            out = root / "showcase.html"
+            with patch.object(
+                sys, "argv", ["make_showcase.py", "--seeds", str(seeds),
+                              "--out", str(out)]
+            ), contextlib.redirect_stdout(io.StringIO()):
+                SHOWCASE.main()
+
+            page = out.read_text(encoding="utf-8")
+            for src in ("Rin/en.wav", "Rin/en2.wav", "Rin/ja.wav", "Mio/ko.wav"):
+                self.assertIn(f'src="{src}"', page)
+            self.assertIn("Hello world", page)
+            self.assertIn("こんにちは", page)
+            self.assertIn("<h2>Rin</h2>", page)
+            self.assertIn("<h2>Mio</h2>", page)
+            # clip 1 before clip 2; language blocks in canonical order
+            self.assertLess(page.index('src="Rin/en.wav"'), page.index('src="Rin/en2.wav"'))
+            self.assertLess(page.index('src="Rin/en.wav"'), page.index('src="Rin/ja.wav"'))
+            self.assertLess(page.index("<h3>en</h3>"), page.index("<h3>ja</h3>"))
+
+    def test_no_readable_clips_aborts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            seeds = Path(directory) / "seeds"
+            (seeds / "Rin").mkdir(parents=True)
+            (seeds / "Rin" / "en.wav").write_bytes(b"junk")
+            (seeds / "Rin" / "en.txt").write_text("x", encoding="utf-8")
+            with patch.object(sys, "argv", ["make_showcase.py", "--seeds", str(seeds)]), \
+                    contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()) as err:
+                with self.assertRaisesRegex(SystemExit, "no readable"):
+                    SHOWCASE.main()
+            self.assertIn("unreadable", err.getvalue())
+
+    def test_escapes_transcript_markup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            seeds = Path(directory) / "seeds"
+            (seeds / "Rin").mkdir(parents=True)
+            write_wav(seeds / "Rin" / "en.wav")
+            (seeds / "Rin" / "en.txt").write_text("<script>alert(1)</script>", encoding="utf-8")
+            out = Path(directory) / "s.html"
+            with patch.object(
+                sys, "argv", ["make_showcase.py", "--seeds", str(seeds),
+                              "--out", str(out)]
+            ), contextlib.redirect_stdout(io.StringIO()):
+                SHOWCASE.main()
+            page = out.read_text(encoding="utf-8")
+            self.assertNotIn("<script>alert(1)</script>", page)
+            self.assertIn("&lt;script&gt;", page)
+
+
+class Dialogue2TsvTests(unittest.TestCase):
+    def test_infer_lang_by_unicode_ranges(self):
+        self.assertEqual(DIALOGUE.infer_lang("The fate of this world."), "en")
+        self.assertEqual(DIALOGUE.infer_lang("这个世界的命运。"), "zh")
+        self.assertEqual(DIALOGUE.infer_lang("この世界の運命は。"), "ja")  # kana beats kanji
+        self.assertEqual(DIALOGUE.infer_lang("세상의 운명은 아직."), "ko")
+
+    def test_script_to_tsv_with_ids_override_and_comments(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "scene.txt"
+            script.write_text(
+                "# a scene\n"
+                "\n"
+                "dragon: The fate of this world was never already written.\n"
+                "drake: You kept me waiting.\n"
+                "dragon: 这个世界的命运，还没有定数。\n"
+                "drake [ja]: 待たせたな。君の最初の失敗だ。\n"
+                "dragon：세상의 운명은 아직 정해지지 않았다.\n",
+                encoding="utf-8",
+            )
+            out = Path(directory) / "lines.tsv"
+            with patch.object(
+                sys, "argv", ["dialogue2tsv.py", "--script", str(script),
+                              "--output", str(out)]
+            ), contextlib.redirect_stderr(io.StringIO()):
+                DIALOGUE.main()
+            self.assertEqual(
+                out.read_text(encoding="utf-8"),
+                "dragon-01\tdragon\ten\tThe fate of this world was never already written.\n"
+                "drake-01\tdrake\ten\tYou kept me waiting.\n"
+                "dragon-02\tdragon\tzh\t这个世界的命运，还没有定数。\n"
+                "drake-02\tdrake\tja\t待たせたな。君の最初の失敗だ。\n"
+                "dragon-03\tdragon\tko\t세상의 운명은 아직 정해지지 않았다.\n",
+            )
+
+    def test_rejects_unknown_bracket_lang_and_malformed_line(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "bad.txt"
+            script.write_text("dragon [fr]: Bonjour\n", encoding="utf-8")
+            with patch.object(sys, "argv", ["dialogue2tsv.py", "--script", str(script)]), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(SystemExit, "not in"):
+                    DIALOGUE.main()
+            script.write_text("no colon here\n", encoding="utf-8")
+            with patch.object(sys, "argv", ["dialogue2tsv.py", "--script", str(script)]), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(SystemExit, "expected"):
+                    DIALOGUE.main()
+
+
+class RenderBatchDryRunTests(unittest.TestCase):
+    def test_plan_reports_speakers_missing_and_estimate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            seeds = root / "seeds" / "Rin"
+            seeds.mkdir(parents=True)
+            write_wav(seeds / "en.wav")
+            (seeds / "en.txt").write_text("Hi", encoding="utf-8")
+            rows = [
+                {"id": "one", "char": "Rin", "lang": "en", "text": "Hello"},
+                {"id": "two", "char": "Rin", "lang": "en", "text": "Again"},
+                {"id": "three", "char": "Rin", "lang": "zh", "text": "你好"},
+            ]
+            plan = RENDER_BATCH.dry_run_plan(rows, root / "seeds", "")
+            self.assertEqual(plan["rows"], 3)
+            self.assertEqual(
+                [f"{s['char']}__{s['lang']}" for s in plan["speakers"]],
+                ["Rin__en"],
+            )
+            self.assertEqual(plan["speakers"][0]["lines"], 2)
+            self.assertEqual([r["id"] for r in plan["missing"]], ["three"])
+            self.assertIn("zh.wav", plan["missing"][0]["missing"])
+            self.assertEqual(plan["est_low_s"], 3 * 5 * 2)
+            self.assertEqual(plan["est_high_s"], 3 * 5 * 5)
+
+    def test_module_has_no_module_level_heavy_deps(self):
+        # load_tool() at import time already proves render_batch.py loads without
+        # torch/cosyvoice installed; keep the explicit assertion too.
+        heavy = ("torch", "torchaudio", "AutoModel", "set_all_random_seed")
+        self.assertFalse(any(name in vars(RENDER_BATCH) for name in heavy))
 
 
 if __name__ == "__main__":

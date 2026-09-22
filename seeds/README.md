@@ -35,8 +35,16 @@ speakers were reused for zh/ja/ko via the per-call language override.
 ## Use
 
 ```bash
+# 0) hear the pack
+python tools/make_showcase.py   # -> seeds/showcase.html (open in any browser)
+
 # 1) validate the pack
 python tools/check_seeds.py --seeds seeds --manifest tools/lines.sample.tsv
+
+# 1b) write new lines as plain text, then pre-flight the render
+#     dragon: 这句话…  /  drake [ja]: 待たせたな。
+python tools/dialogue2tsv.py --script scene.txt --output lines.tsv
+python tools/render_batch.py --lines lines.tsv --dry-run
 
 # 2) CosyVoice path — register <lang>.wav as a named speaker once, then batch-render
 python tools/render_batch.py --lines lines.tsv --model_dir pretrained_models/Fun-CosyVoice3-0.5B

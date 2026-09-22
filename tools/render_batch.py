@@ -13,6 +13,8 @@ What it does:
   * optional --instruct for style (dialect/emotion/rate) — uses inference_instruct2,
     which needs the clip present at call time
   * writes wavs/<char_id>/<id>.wav at 24 kHz mono (CV3) / 24 kHz (CV2)
+  * --dry-run validates the manifest + seed clips and prints the plan (speakers,
+    missing clips, CPU time estimate) WITHOUT importing torch — run it first
 
 Notes for Japanese: upstream recommends spaced katakana for CV3. Pre-convert the text
 rather than feeding raw kanji — tools/ja_katakana.py rewrites the `ja` rows of a manifest
@@ -30,12 +32,6 @@ from collections import defaultdict
 from pathlib import Path
 
 sys.path.append("third_party/Matcha-TTS")  # noqa: E402  (CosyVoice expects this)
-
-import torch  # noqa: E402
-import torchaudio  # noqa: E402
-
-from cosyvoice.cli.cosyvoice import AutoModel  # noqa: E402
-from cosyvoice.utils.common import set_all_random_seed  # noqa: E402
 
 LANGS = {"en", "zh", "ja", "ko", "yue"}
 
@@ -56,6 +52,37 @@ def read_manifest(path: Path) -> list[dict]:
     return rows
 
 
+def dry_run_plan(rows: list[dict], seeds: Path, instruct: str) -> dict:
+    """What a real run would do, minus torch: speakers, missing clips, time estimate.
+
+    The estimate assumes ~5 s of audio per line at RTF 2–5 on CPU (see the plan's
+    'What to expect on CPU' section).
+    """
+    speakers: dict[str, dict] = {}
+    missing: list[dict] = []
+    for r in rows:
+        spk_id = f"{r['char']}__{r['lang']}"
+        wav = seeds / r["char"] / f"{r['lang']}.wav"
+        txt = wav.with_suffix(".txt")
+        if wav.exists() and txt.exists():
+            spk = speakers.setdefault(spk_id, {"char": r["char"], "lang": r["lang"], "lines": 0})
+            spk["lines"] += 1
+        else:
+            absent = [str(p) for p in (wav, txt) if not p.exists()]
+            item = dict(r)
+            item["missing"] = " + ".join(absent)
+            missing.append(item)
+    per_line_s = 5.0
+    return {
+        "rows": len(rows),
+        "speakers": [speakers[k] for k in sorted(speakers)],
+        "missing": missing,
+        "est_low_s": len(rows) * per_line_s * 2.0,
+        "est_high_s": len(rows) * per_line_s * 5.0,
+        "instruct": bool(instruct),
+    }
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model_dir", default="pretrained_models/Fun-CosyVoice3-0.5B")
@@ -70,17 +97,55 @@ def main() -> None:
     ap.add_argument("--threads", type=int, default=0, help="torch CPU threads (0 = all)")
     ap.add_argument("--save_spkinfo", action="store_true",
                     help="persist registered speakers into the model dir (spk2info.pt)")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="validate manifest + seed clips and print the plan; no torch, "
+                         "no rendering (exit 1 if any line lacks a seed clip and no "
+                         "--instruct fallback is given)")
     args = ap.parse_args()
+
+    rows = read_manifest(args.lines)
+
+    by_char = defaultdict(list)
+    for r in rows:
+        by_char[r["char"]].append(r)
+
+    if args.dry_run:
+        plan = dry_run_plan(rows, args.seeds, args.instruct)
+        print(f"[dry-run] {args.lines}: {plan['rows']} line(s)")
+        if plan["speakers"]:
+            print("[dry-run] speakers to register (clip encoded ONCE per char/lang):")
+            for spk in plan["speakers"]:
+                wav = args.seeds / spk["char"] / f"{spk['lang']}.wav"
+                print(f"  {spk['char']}__{spk['lang']}  ({spk['lines']} line(s)) <- {wav}")
+        else:
+            print("[dry-run] no speakers can be registered — no seed clips match the manifest")
+        if plan["missing"]:
+            for item in plan["missing"]:
+                print(f"[error] {item['id']}: missing {item['missing']}")
+            if plan["instruct"]:
+                print(f"[warn] {len(plan['missing'])} line(s) will fall back to --instruct + a raw clip")
+            else:
+                print(f"[fail] {len(plan['missing'])} line(s) lack a seed clip — add seeds/<char>/<lang>.wav + .txt")
+        renderable = plan["rows"] - len(plan["missing"])
+        if renderable > 0:
+            print(f"[dry-run] estimate: {renderable} line(s) ≈ "
+                  f"{plan['est_low_s'] / 60:.0f}-{plan['est_high_s'] / 60:.0f} min "
+                  f"at RTF 2-5 (5 s of audio per line, CPU)")
+        if plan["missing"] and not plan["instruct"]:
+            raise SystemExit(1)
+        print("[ok] ready to render — re-run without --dry-run")
+        return
+
+    # Heavy deps only for real rendering, so --dry-run works anywhere.
+    import torch  # noqa: E402
+    import torchaudio  # noqa: E402
+    from cosyvoice.cli.cosyvoice import AutoModel  # noqa: E402
+    from cosyvoice.utils.common import set_all_random_seed  # noqa: E402
 
     if args.threads:
         torch.set_num_threads(args.threads)
     if torch.cuda.is_available() is False:
         print("[info] CPU mode: expect RTF 2-5, i.e. tens of seconds per line")
-
-    rows = read_manifest(args.lines)
-    by_char = defaultdict(list)
-    for r in rows:
-        by_char[r["char"]].append(r)
 
     cv = AutoModel(model_dir=args.model_dir)
     print(f"[info] model={args.model_dir} sample_rate={cv.sample_rate} lines={len(rows)}")
