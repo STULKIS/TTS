@@ -13,6 +13,7 @@ Working notes for a fully-local, legally-clean character-voice pipeline (en · z
 | `tools/ja_katakana.py` | Converts `ja` manifest lines to spaced katakana for CosyVoice3 (pykakasi). |
 | `tools/dialogue2tsv.py` | Plain-text script → manifest TSV (auto ids, lang inferred, `char [xx]:` override). |
 | `tools/make_showcase.py` | One-click HTML player for the seed pack (`seeds/showcase.html`). |
+| `tools/type_ui.py` | Type-and-speak WebUI for GPT-SoVITS: pick a character (or upload any reference clip), type text, hear it — runs inside your GPT-SoVITS install. |
 | `tools/lines.sample.tsv` | Example manifest (2 characters × en/zh/ja/ko) — works with both renderers. |
 | `seeds/` | The seed packs: dragon & drake, 5 lines × en/zh/ja/ko each (44.1 kHz mono WAV + verbatim transcripts). Voice briefs in `seeds/README.md`. |
 
