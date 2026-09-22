@@ -32,6 +32,32 @@ manifest requires at least `<lang>.wav` per char/lang the manifest uses.
 Session notes: voices were picked by audition (English, `use_case: characters`), then the same
 speakers were reused for zh/ja/ko via the per-call language override.
 
+## Voice features (design vocabulary)
+
+Features are properties of the **timbre** — they are set *at design time* (in-chat audition) and
+baked into the reference clips. Render-time channels can only steer *style* (rate/volume/emotion),
+so "a drier voice" = regenerate the clips, not a render flag.
+
+| Feature | Scale |
+|---|---|
+| age | child → teen → young adult → middle-aged → elderly → ancient |
+| wetness ↔ dryness | moist, gurgly, saturated ↔ dry, papery, raspy |
+| breathiness | solid ↔ airy |
+| pitch | low ↔ high |
+| warmth | cold/clinical ↔ warm/humming |
+| rate | glacial ↔ brisk (render-time nudge: CV3 `--instruct` fastest/slowest — validated) |
+| volume | whisper ↔ projecting (render-time: "very soft voice" / "as loudly as possible" — validated) |
+| emotion baseline | calm ↔ volatile (render-time: very happy/sad/angry — validated) |
+
+Current values:
+
+- **dragon** — ancient · dry-warm (dry voice *with* warmth, not wet) · solid · low · glacial · calm
+- **drake** — middle-aged · dry/papery · solid · mid-low · brisk · volatile-but-controlled
+
+Want a different value? Say it in chat ("make drake drier", "dragon but younger, a touch
+wetter") → re-audition + regenerate that character's 4-language set. The feature sticks across
+the whole pack because every clip comes from the same voice.
+
 ## Use
 
 ```bash
