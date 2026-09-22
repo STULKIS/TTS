@@ -12,6 +12,7 @@ Working notes for a fully-local, legally-clean character-voice pipeline (en · z
 | `tools/check_seeds.py` | Validates a seed pack against the verified prompt-clip rules (30 s hard cap, ≥16 kHz, mono, 3–10 s, transcripts). |
 | `tools/ja_katakana.py` | Converts `ja` manifest lines to spaced katakana for CosyVoice3 (pykakasi). |
 | `tools/lines.sample.tsv` | Example manifest (2 characters × en/zh/ja/ko) — works with both renderers. |
+| `seeds/` | The seed packs: dragon & drake, 5 lines × en/zh/ja/ko each (44.1 kHz mono WAV + verbatim transcripts). Voice briefs in `seeds/README.md`. |
 
 Fast path: design voices in chat → save 3–10 s clips as `seeds/<char>/<lang>.wav` → validate with
 `tools/check_seeds.py` → `render_batch.py`.
