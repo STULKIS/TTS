@@ -15,7 +15,8 @@ What it does:
   * writes wavs/<char_id>/<id>.wav at 24 kHz mono (CV3) / 24 kHz (CV2)
 
 Notes for Japanese: upstream recommends spaced katakana for CV3. Pre-convert the text
-(e.g. pykakasi) rather than feeding raw kanji.
+rather than feeding raw kanji — tools/ja_katakana.py rewrites the `ja` rows of a manifest
+(needs pykakasi). Validate the seed pack itself with tools/check_seeds.py.
 
 Not executed here (no CUDA/model weights in this sandbox) — API signatures verified against
 CosyVoice@main 2026-09: inference_zero_shot(tts_text, prompt_text, prompt_wav, zero_shot_spk_id,

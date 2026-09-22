@@ -9,9 +9,12 @@ Working notes for a fully-local, legally-clean character-voice pipeline (en · z
 | `local-tts-guide.md` | General reference — GPT-SoVITS: version map, free-Colab training, dataset prep, CPU inference (+CPUFast fork). |
 | `tools/render_batch.py` | CPU batch renderer (CosyVoice path): registers each character's seed clip as a named speaker, renders a `.tsv` manifest. |
 | `tools/render_batch_gsv.py` | Batch renderer (GPT-SoVITS path): same manifest, hot-swaps per-character fine-tuned models via `api_v2`. |
+| `tools/check_seeds.py` | Validates a seed pack against the verified prompt-clip rules (30 s hard cap, ≥16 kHz, mono, 3–10 s, transcripts). |
+| `tools/ja_katakana.py` | Converts `ja` manifest lines to spaced katakana for CosyVoice3 (pykakasi). |
 | `tools/lines.sample.tsv` | Example manifest (2 characters × en/zh/ja/ko) — works with both renderers. |
 
-Fast path: design voices in chat → save 3–10 s clips as `seeds/<char>/<lang>.wav` → `render_batch.py`.
+Fast path: design voices in chat → save 3–10 s clips as `seeds/<char>/<lang>.wav` → validate with
+`tools/check_seeds.py` → `render_batch.py`.
 For a dedicated per-character model instead (better consistency over hundreds of lines), fine-tune
 GPT-SoVITS v2ProPlus on free Colab and render with `render_batch_gsv.py` — see `local-tts-guide.md`.
 Hardware rule: reference-clip cloning runs on CPU (slowly); text→timbre *design* (Qwen3-TTS
