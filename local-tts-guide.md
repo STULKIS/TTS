@@ -236,6 +236,8 @@ dialogue ≈ 25–40 min unattended. That's roughly 4–10× quicker per line th
 
 ## 8. Reference-clip rules (carry over from the plan)
 
+- Validate a pack mechanically with `tools/check_seeds.py` (30 s hard cap, ≥ 16 kHz, mono,
+  transcript present) — same envelope applies to both engines.
 - **3–10 s**, mono, ≥ 32 kHz source preferred (v2-family output rate), clean, no music.
 - Transcript **verbatim**, in the clip's language; `prompt_lang` must match.
 - Same seed + same reference = reproducible takes (`seed` param; the batch renderer pins it

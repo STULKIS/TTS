@@ -134,7 +134,8 @@ reference clip at all, that exists only on v1: CosyVoice-300M-Instruct + inferen
 Language notes (CV3):
   · Chinese/English/Korean: feed text as-is.
   · Japanese: upstream recommends spaced KATAKANA (レキシ テキ セカイ ニ オイ テ ワ、…) —
-    raw kanji text is a known weak path. Run your JP lines through a kana converter first.
+    raw kanji text is a known weak path. Run your JP lines through a kana converter first
+    (tools/ja_katakana.py does this for a whole manifest; needs `pip install pykakasi`).
   · <|zh|><|en|><|ja|><|ko|><|yue|> tags are the *v1* inference_cross_lingual API
     (example.py still documents them). CV3 cross-lingual = "You are a helpful assistant.<|endofprompt|>"
     + target-language text; it also does cross-lingual zero-shot cloning natively.
