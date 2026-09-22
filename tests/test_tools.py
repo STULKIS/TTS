@@ -34,6 +34,8 @@ GSV = load_tool("render_batch_gsv", "render_batch_gsv.py")
 SHOWCASE = load_tool("make_showcase", "make_showcase.py")
 DIALOGUE = load_tool("dialogue2tsv", "dialogue2tsv.py")
 RENDER_BATCH = load_tool("render_batch", "render_batch.py")
+CPU_CONFIG = load_tool("cpu_config", "cpu_config.py")
+PREFLIGHT = load_tool("preflight", "preflight.py")
 
 
 def write_wav(path: Path, *, rate: int = 24_000, seconds: float = 4,
@@ -412,6 +414,102 @@ class RenderBatchDryRunTests(unittest.TestCase):
         # torch/cosyvoice installed; keep the explicit assertion too.
         heavy = ("torch", "torchaudio", "AutoModel", "set_all_random_seed")
         self.assertFalse(any(name in vars(RENDER_BATCH) for name in heavy))
+
+
+class CpuConfigTests(unittest.TestCase):
+    def _write_config(self, root: Path) -> Path:
+        configs = root / "GPT_SoVITS" / "configs"
+        configs.mkdir(parents=True)
+        cfg = configs / "tts_infer.yaml"
+        cfg.write_text(
+            "v2:\n"
+            "  device: cuda:0\n"
+            "  is_half: true\n"
+            "  t2s_weights_path: x.ckpt\n",
+            encoding="utf-8",
+        )
+        return cfg
+
+    def test_rewrites_device_and_half_and_backs_up(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = self._write_config(root)
+            with patch.object(sys, "argv", ["cpu_config.py", "--gsv-root", str(root)]), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                CPU_CONFIG.main()
+            text = cfg.read_text(encoding="utf-8")
+            self.assertIn("device: cpu", text)
+            self.assertIn("is_half: false", text)
+            self.assertIn("t2s_weights_path: x.ckpt", text)
+            self.assertIn("cuda:0", cfg.with_suffix(".yaml.orig").read_text(encoding="utf-8"))
+
+    def test_idempotent_and_keeps_first_backup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = self._write_config(root)
+            argv = ["cpu_config.py", "--gsv-root", str(root)]
+            for _ in range(2):
+                with patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()):
+                    CPU_CONFIG.main()
+            text = cfg.read_text(encoding="utf-8")
+            self.assertEqual(text.count("device: cpu"), 1)
+            self.assertIn("is_half: false", text)
+            self.assertIn("cuda:0", cfg.with_suffix(".yaml.orig").read_text(encoding="utf-8"))
+
+    def test_missing_config_aborts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(sys, "argv", ["cpu_config.py", "--gsv-root", directory]), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(SystemExit, "not found"):
+                    CPU_CONFIG.main()
+
+
+class PreflightTests(unittest.TestCase):
+    def _make_gsv(self, root: Path, *, weights: bool = True, cpu: bool = True) -> None:
+        pkg = root / "GPT_SoVITS"
+        (pkg / "configs").mkdir(parents=True)
+        dev, half = ("cuda:0", "true") if not cpu else ("cpu", "false")
+        (pkg / "configs" / "tts_infer.yaml").write_text(
+            f"v2:\n  device: {dev}\n  is_half: {half}\n", encoding="utf-8")
+        pm = pkg / "pretrained_models"
+        if weights:
+            (pm / "gsv-v2final-pretrained").mkdir(parents=True)
+            for f in ("gpt.pth", "s2G2333.pth", "s2D2333.pth"):
+                (pm / "gsv-v2final-pretrained" / f).touch()
+            (pm / "chinese-hubert-base").mkdir(parents=True)
+            (pm / "chinese-roberta-wwm-ext-large").mkdir(parents=True)
+
+    def _make_seeds(self, root: Path) -> None:
+        seeds = root / "seeds" / "Rin"
+        seeds.mkdir(parents=True)
+        write_wav(seeds / "en.wav")
+        (seeds / "en.txt").write_text("Hi", encoding="utf-8")
+
+    def test_ready_when_all_present(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._make_gsv(root)
+            self._make_seeds(root)
+            output = io.StringIO()
+            with patch.object(sys, "argv", ["preflight.py", "--gsv-root", str(root),
+                                            "--seeds", str(root / "seeds")]), \
+                    contextlib.redirect_stdout(output):
+                PREFLIGHT.main()
+            out = output.getvalue()
+            self.assertIn("[ready] all checks passed", out)
+            self.assertNotIn("[fail]", out)
+
+    def test_cuda_config_and_missing_weights_fail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._make_gsv(root, weights=False, cpu=False)
+            self._make_seeds(root)
+            with patch.object(sys, "argv", ["preflight.py", "--gsv-root", str(root),
+                                            "--seeds", str(root / "seeds")]), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(SystemExit) as raised:
+                    PREFLIGHT.main()
+            self.assertEqual(raised.exception.code, 1)
 
 
 if __name__ == "__main__":

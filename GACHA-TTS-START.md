@@ -15,24 +15,64 @@ that: dragon & drake, 5 lines × 4 languages each, with verbatim transcripts.
 
 ## 1. Install on Windows (closest thing to an .exe)
 
-**A. Integrated package (GPU-first, weights included):**
-1. HuggingFace `lj1995/GPT-SoVITS-windows-package` → latest **`GPT-SoVITS-v2pro-20250604.7z`** (~8.2 GB).
-   ⚠️ The README's own download button still links an older package — use the repo tree
-   (verified 2026-09-22, see `local-tts-guide.md` §3A).
-2. Extract → **double-click `go-webui.bat`** → WebUI opens in your browser. Done.
+**Step 0 — 30-second pre-flight** (do this before any download):
+- [ ] **30 GB free disk** (the extracted package is big)
+- [ ] **16 GB RAM** (8 GB minimum) — yours: 16 GB ✅
+- [ ] **7-Zip** installed (https://www.7-zip.org) — needed to open the .7z
+- [ ] Pick a **short extract path**: `D:\GSV` (not `C:\Users\YourName\Downloads\…` —
+      the folder paths inside are very long and Windows will choke)
 
-**B. No NVIDIA GPU? (your box)** — the package above is GPU-first; the CPU-tested route:
+**Step 1 — Get the engine (pick one):**
+
+**A. Integrated package (recommended — closest to double-click):**
+1. HuggingFace `lj1995/GPT-SoVITS-windows-package` → **`GPT-SoVITS-v2pro-20250604.7z`** (~8.2 GB).
+   ⚠️ Use the repo tree, NOT the README's download button (it links an older package;
+   verified 2026-09-22, see `local-tts-guide.md` §3A).
+2. Extract to `D:\GSV` → folder `D:\GSV` containing `go-webui.bat`.
+
+**B. CPU-first route (use if A misbehaves on a no-GPU box)** — the explicitly CPU-tested path:
 ```powershell
-# conda + installer script, Windows PowerShell (local-tts-guide.md §3B)
+# needs Miniconda (docs.conda.io/miniconda), then:
 conda create -n GPTSoVits python=3.10 && conda activate GPTSoVits
+cd D:\GSV
 pwsh -F install.ps1 --Device CPU --Source HF
 python webui.py en_US
 ```
-A pure-CPU env is explicitly tested upstream (Python 3.9 + PyTorch 2.2.2).
-Recommendation: 16 GB RAM helps; CPU generation is usable, CPU *training* is not —
-train in free Colab (route B below) or skip training and live on zero-shot.
+(A pure-CPU env is tested upstream: Python 3.9 + PyTorch 2.2.2.)
+
+**Step 2 — Pre-fix the CPU config (the #1 silent failure on no-NVIDIA boxes):**
+Open a terminal **inside** `D:\GSV` (type `cmd` in the folder's address bar → Enter), then:
+```
+python D:\TTS\tools\cpu_config.py --gsv-root D:\GSV
+```
+Sets `device: cpu` / `is_half: false` in `tts_infer.yaml` (backed up first, idempotent —
+safe to re-run). The WebUI's Config tab does the same thing; this covers the API/type_ui path.
+
+**Step 3 — Run the pre-flight checker (finds problems before they bite):**
+```
+python D:\TTS\tools\preflight.py --gsv-root D:\GSV --seeds D:\TTS\seeds --manifest D:\TTS\tools\lines.sample.tsv
+```
+All green → proceed. Any `[fail]` → the line tells you exactly what to fix.
+
+**Step 4 — Start:** `go-webui.bat` (full WebUI) and/or `type_ui.py` (see §2b).
+
+**Troubleshooting (if you see → do this):**
+
+| If you see this | Do this |
+|---|---|
+| SmartScreen "Windows protected your PC" on `go-webui.bat` | **More info → Run anyway** (it's a local script, not malware) |
+| 7z "archive is corrupt" | Re-download; file should be ~8.2 GB; extract to a short path |
+| `python` is not recognized in the terminal | The terminal must be opened *inside* `D:\GSV` (package's python); or run `go-webui.bat` once first |
+| CUDA / `is_half` / `half` error on first generation | Step 2 not done → run `cpu_config.py`; or WebUI → Config tab → device: `cpu`, is_half: `false` |
+| "Port 9874 already in use" | Close the other server window, or change the port in the Config tab |
+| type_ui: "does not look like a GPT-SoVITS root" | `--gsv-root` must point at the folder containing `GPT_SoVITS\` |
+| type_ui: "pipeline failed to load" | Weights missing → Step 1B's installer, or `local-tts-guide.md` §3; run preflight to see exactly what |
+| Generation takes seconds per line | **Normal on CPU** (RTF ~0.5): 5 s of audio ≈ 3 s of waiting. Don't close the tab |
+| "Can't reach this page" in browser | The server's terminal window must stay open; open `http://127.0.0.1:7861` by hand |
+| Defender quarantines a `.bat` (rare) | Allow the notification, or add an exclusion for `D:\GSV` |
 
 **Version:** start with **v2Pro** (near-v4 quality at v2 cost). v3/v4 want more VRAM.
+CPU generation is usable; CPU *training* is not — train in free Colab (§3) or live on zero-shot.
 
 ---
 
@@ -67,10 +107,10 @@ click **🔊 Speak** → audio. A second tab takes *any* reference clip you uplo
 (5–10 s wav + verbatim transcript) — i.e. any voice you want, not just the pack.
 
 ```powershell
-# in your GPT-SoVITS folder (integrated package: cd into the extracted 7z;
-# conda route: conda activate GPTSoVits first), from a terminal:
-python C:\TTS\tools\type_ui.py --seeds C:\TTS\seeds
-# → open http://127.0.0.1:7861
+# terminal opened INSIDE D:\GSV (address bar → cmd → Enter):
+python D:\TTS\tools\type_ui.py --seeds D:\TTS\seeds --open
+# → browser opens http://127.0.0.1:7861 automatically
+# (conda route: conda activate GPTSoVits first; --gsv-root D:\GSV if run elsewhere)
 ```
 (If `python` isn't recognized, use the `python.exe` inside the integrated-package
 folder. The UI reads `GPT_SoVITS/configs/tts_infer.yaml`, so it also picks up a
@@ -100,11 +140,16 @@ API with the trained model.
 
 ---
 
-## 4. Voice features (age, wetness/dryness, breath…)
+## 4. Voice features (age, wetness/dryness, breath…) + presets
 
 Features are **timbre properties** — set at design time, baked into the reference
-clips, not render-time flags. The design vocabulary (scales + which render-time
-knobs exist) lives in `seeds/README.md`. Current values:
+clips, not render-time flags. The full 19-feature vocabulary (age, wetness↔dryness,
+roughness, breathiness, nasality, resonance, pitch, pitch variety, warmth, smile tone,
+rate, energy, articulation, steadiness, intimacy, volume, emotion, exaggeration,
+gender presentation) plus **named presets — mommy, daddy, cold villain, genki little
+sister, strict senpai, lazy/bored, gravelly veteran, tsundere, …** — live in
+`seeds/README.md` ("Voice features" + "Voice presets"). Request any of them in chat:
+*"a mommy voice for a new character"*, *"make drake drier"*. Current values:
 
 - **dragon** — ancient · dry-warm · solid · low · glacial · calm
 - **drake** — middle-aged · dry/papery · solid · mid-low · brisk · volatile-but-controlled

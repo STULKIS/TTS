@@ -36,18 +36,56 @@ speakers were reused for zh/ja/ko via the per-call language override.
 
 Features are properties of the **timbre** — they are set *at design time* (in-chat audition) and
 baked into the reference clips. Render-time channels can only steer *style* (rate/volume/emotion),
-so "a drier voice" = regenerate the clips, not a render flag.
+so "a drier voice" = regenerate the clips, not a render flag. Say any value out loud —
+*"make drake drier"*, *"dragon but younger"* — and the affected char/lang set gets re-auditioned.
 
 | Feature | Scale |
 |---|---|
 | age | child → teen → young adult → middle-aged → elderly → ancient |
+| gender presentation | feminine ↔ masculine ↔ androgynous |
 | wetness ↔ dryness | moist, gurgly, saturated ↔ dry, papery, raspy |
+| roughness | smooth/silky ↔ gritty/gravelly |
 | breathiness | solid ↔ airy |
+| nasality | open ↔ nasal |
+| resonance | bright head ↔ deep chest |
 | pitch | low ↔ high |
+| pitch variety | monotone ↔ big lively intonation |
 | warmth | cold/clinical ↔ warm/humming |
-| rate | glacial ↔ brisk (render-time nudge: CV3 `--instruct` fastest/slowest — validated) |
-| volume | whisper ↔ projecting (render-time: "very soft voice" / "as loudly as possible" — validated) |
-| emotion baseline | calm ↔ volatile (render-time: very happy/sad/angry — validated) |
+| smile tone | flat/serious ↔ smiling |
+| rate | glacial ↔ brisk |
+| energy | laid-back ↔ high-energy |
+| articulation | slurred/drawled ↔ crisp/precise |
+| steadiness | wobbly/trembling ↔ rock-steady |
+| intimacy | distant/broadcast ↔ close-mic intimate |
+| volume | whisper ↔ projecting |
+| emotion baseline | calm ↔ volatile |
+| exaggeration | subdued/natural ↔ dramatic/over-acted |
+
+Render-time nudges (CosyVoice `--instruct`, the *validated* subset only): rate
+(fastest/slowest), volume ("as loudly as possible" / "very soft voice"), emotion
+(very happy/sad/angry), dialects, robot style. Everything else above is design-time.
+
+## Voice presets (named archetypes)
+
+A preset is just a feature bundle with a name — the fastest way to design. Request one with
+*"a **<preset>** voice for <character>"* (new character) or *"re-voice <character> as <preset>"*.
+
+| Preset | Feature bundle |
+|---|---|
+| **mommy** | warm · soft · mid pitch · slight smile · slow · steady · intimate |
+| **daddy** | low · deep chest resonance · dry · slow · serious · rock-steady |
+| **cold villain** | low · resonant · dry · glacial · sneer-smile · dramatic |
+| **genki little sister** | high · bright head · big intonation · fast · high-energy · smiling |
+| **strict senpai** | mid-low · dry · crisp · near-monotone · distant · slow |
+| **elegant mature lady** | mid-low · smooth · warm · measured · polished · even |
+| **lazy / bored** | low-energy · slow · slight slur · dry · flat |
+| **gravelly veteran** | low · gritty · dry · slow · worn |
+| **child** | high · bright · big intonation · high-energy · airy |
+| **elderly** | aged · slower · lower energy · slight breathiness |
+| **radio host** | warm · resonant · even pace · projecting · polished |
+| **whispery intimate** | soft · airy · close-mic · low volume · slow |
+| **tsundere** | mid · crisp · fast · volatile · biting |
+| **ancient sage** | ancient · dry-warm · glacial · low · calm *(= current dragon)* |
 
 Current values:
 
@@ -55,7 +93,7 @@ Current values:
 - **drake** — middle-aged · dry/papery · solid · mid-low · brisk · volatile-but-controlled
 
 Want a different value? Say it in chat ("make drake drier", "dragon but younger, a touch
-wetter") → re-audition + regenerate that character's 4-language set. The feature sticks across
+wetter", "new character with a mommy voice") → re-audition + regenerate. The feature sticks across
 the whole pack because every clip comes from the same voice.
 
 ## Use

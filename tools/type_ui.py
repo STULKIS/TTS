@@ -80,8 +80,16 @@ def build_app(gsv_root: Path, seeds: Path, tts_config_path: str):
     from fastapi.responses import HTMLResponse, Response, JSONResponse  # noqa: E402
 
     print(f"[type-ui] loading GPT-SoVITS pipeline (config={tts_config_path}) …")
-    tts_config = TTS_Config(tts_config_path)
-    tts_pipeline = TTS(tts_config)
+    try:
+        tts_config = TTS_Config(tts_config_path)
+        tts_pipeline = TTS(tts_config)
+    except SystemExit:
+        raise
+    except Exception as e:
+        raise SystemExit(
+            f"[abort] GPT-SoVITS pipeline failed to load: {e}\n"
+            "  · Weights missing/incomplete? See local-tts-guide.md §3 (manual model placement).\n"
+            "  · CUDA error on a no-GPU box? Run: python tools/cpu_config.py --gsv-root <GPT-SoVITS folder>")
     pack = scan_pack(seeds)
     print(f"[type-ui] ready: version={tts_config.version} languages={tts_config.languages} "
           f"pack={len(pack)} clip(s) under {seeds}")
@@ -180,6 +188,8 @@ textarea { width: 100%; box-sizing: border-box; font: inherit; min-height: 5.5re
         background: transparent; color: inherit; resize: vertical; }
 button { font: inherit; padding: .55rem 1.4rem; border-radius: .5rem; border: 0;
         background: #4f7cff; color: #fff; cursor: pointer; }
+button.ghost { background: transparent; color: inherit;
+        border: 1px solid rgba(128,128,128,.5); }
 button:disabled { opacity: .5; cursor: wait; }
 .clipinfo { font-size: .85rem; opacity: .75; }
 audio { width: 100%; margin-top: .75rem; }
@@ -227,6 +237,7 @@ audio { width: 100%; margin-top: .75rem; }
   </div>
   <div class="row">
     <button id="go">🔊 Speak</button>
+    <button id="sample" type="button" class="ghost">↺ Use sample line</button>
     <span id="msg"></span>
   </div>
   <audio id="out" controls style="display:none"></audio>
@@ -264,9 +275,20 @@ function currentClip() {
 function showClipInfo() {
   const c = currentClip();
   $("clipinfo").textContent = c ? `“${c.transcript}”` : "";
-  if (c) { $("textlang").value = c.lang; }
+  if (c) {
+    $("text").value = c.transcript;   // known-good line for this voice/lang — one-click test
+    $("textlang").value = c.lang;
+  }
 }
 charsSel.onchange = fillLangs; langSel.onchange = fillClips; clipSel.onchange = showClipInfo;
+$("sample").onclick = () => {
+  const c = currentClip();
+  if (c) {
+    $("text").value = c.transcript;
+    $("textlang").value = c.lang;
+    msg("sample line loaded", false);
+  } else { msg("pick a character + language first", true); }
+};
 
 let customPath = null;
 $("ref").onchange = async () => {
@@ -347,6 +369,8 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=7861)
     ap.add_argument("--bind", default="127.0.0.1")
     ap.add_argument("--tts-config", default="GPT_SoVITS/configs/tts_infer.yaml")
+    ap.add_argument("--open", action="store_true",
+                    help="open the browser automatically when the server starts")
     args = ap.parse_args()
 
     if not (args.gsv_root / "GPT_SoVITS").is_dir():
@@ -354,10 +378,27 @@ def main() -> None:
             f"[abort] {args.gsv_root} does not look like a GPT-SoVITS root "
             f"(no GPT_SoVITS/ dir) — run from the GPT-SoVITS folder or pass --gsv-root")
 
+    import socket  # noqa: E402
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind((args.bind, args.port))
+    except OSError:
+        raise SystemExit(
+            f"[abort] port {args.port} is already in use — "
+            f"close the other server or try: --port {args.port + 1}")
+    finally:
+        probe.close()
+
     import uvicorn  # noqa: E402
 
     app = build_app(args.gsv_root.resolve(), args.seeds.resolve(), args.tts_config)
-    print(f"[type-ui] serving http://{args.bind}:{args.port}")
+    url = f"http://{'127.0.0.1' if args.bind in ('0.0.0.0', '::') else args.bind}:{args.port}"
+    if args.open:
+        import threading  # noqa: E402
+        import webbrowser  # noqa: E402
+        threading.Timer(1.5, lambda: webbrowser.open(url)).start()
+    print(f"[type-ui] serving {url}")
     uvicorn.run(app, host=args.bind, port=args.port, log_level="warning")
 
 
