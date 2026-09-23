@@ -150,7 +150,22 @@ style, stutter, accents, …) plus **110 named presets in 10 groups** —
 mommy, daddy, cold CEO, tsundere, ancient dragon, noir detective, movie-trailer
 voice, … — live in `seeds/README.md` (features) and **`VOICE-PRESETS.md`** (catalog).
 Request any of them in chat: *"a mommy voice for a new character"*,
-*"make drake drier"*. Current values:
+*"make drake drier"*.
+
+**Your own catalog (`presets.csv`)** — the full gacha voice list (~1000 lines,
+25 classes, each character = a base row + texture/pace variants). Drop the CSV at
+the repo root and run:
+
+```bash
+python tools/presets_ingest.py
+```
+
+→ validates every line (sequential numbering, enums, base/variant blocks,
+duplicate names, unescapes `&amp;`), then generates **`PRESET-CATALOG.md`** and
+**`PRESET-CATALOG.html`** — browse/filter by class, pitch, pace, rarity; click a
+row for its 58-feature bundle. Any line is orderable by number, name, or class:
+*"new character with a **Villain & Mastermind** voice — line 361"* /
+*"*Crimson Script*, but slower". Current values:
 
 - **dragon** — ancient · dry-warm · solid · low · glacial · calm
 - **drake** — middle-aged · dry/papery · solid · mid-low · brisk · volatile-but-controlled

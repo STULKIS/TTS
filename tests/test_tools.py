@@ -36,6 +36,7 @@ DIALOGUE = load_tool("dialogue2tsv", "dialogue2tsv.py")
 RENDER_BATCH = load_tool("render_batch", "render_batch.py")
 CPU_CONFIG = load_tool("cpu_config", "cpu_config.py")
 PREFLIGHT = load_tool("preflight", "preflight.py")
+PRESETS = load_tool("presets_ingest", "presets_ingest.py")
 
 
 def write_wav(path: Path, *, rate: int = 24_000, seconds: float = 4,
@@ -510,6 +511,131 @@ class PreflightTests(unittest.TestCase):
                 with self.assertRaises(SystemExit) as raised:
                     PREFLIGHT.main()
             self.assertEqual(raised.exception.code, 1)
+
+
+# A minimal valid catalog: one class, two bases, mixed rarity, an entity-escaped class name.
+PRESETS_GOOD = (
+    "no,name,class,gender,rarity,pitch,pace,signature,description\n"
+    '1,Genki Spark,Genki &amp; Sunshine,Feminine,5,High,Dash,yes,"A little comet that laughs first."\n'
+    '2,Genki Spark · Honey Lilt,Genki &amp; Sunshine,Feminine,4,High,Lilt,no,"Softer sugar, still fast."\n'
+    '3,Genki Spark · Gravel Tale,Genki &amp; Sunshine,Feminine,3,High,Tale,no,"Scrappy storyteller energy."\n'
+    '4,Snowglass,Kuudere Ice,Feminine,5,Soft,Pulse,yes,"Quiet, clear, perfectly still."\n'
+    '5,Snowglass · Bell Burst,Kuudere Ice,Feminine,4,High,Burst,no,"Crisp ice chime."\n'
+)
+
+
+class PresetsIngestTests(unittest.TestCase):
+    def _write(self, content: str) -> Path:
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as fh:
+            fh.write(content)
+            return Path(fh.name)
+
+    def _run(self, content: str):
+        import tempfile
+        csv_path = self._write(content)
+        tmp = str(csv_path)
+        try:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+                rc = PRESETS.main(["--csv", tmp, "--no-html"])
+            return rc, buf.getvalue(), csv_path
+        finally:
+            for extra in ("PRESET-CATALOG.md", "PRESET-CATALOG.html"):
+                p = csv_path.with_name(extra)
+                if p.exists():
+                    p.unlink()
+            csv_path.unlink(missing_ok=True)
+
+    def test_wellformed_catalog_ok(self):
+        rc, out, _ = self._run(PRESETS_GOOD)
+        self.assertEqual(rc, 0)
+        self.assertIn("OK", out)
+        self.assertIn("5 lines", out)
+        # entity-escaped class name is unescaped in the report
+        self.assertNotIn("&amp;", out)
+
+    def test_html_generated_by_default(self):
+        import tempfile
+        csv_path = self._write(PRESETS_GOOD)
+        tmp = str(csv_path)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = PRESETS.main(["--csv", tmp])
+            self.assertEqual(rc, 0)
+            html_path = csv_path.with_name("PRESET-CATALOG.html")
+            self.assertTrue(html_path.exists())
+            text = html_path.read_text(encoding="utf-8")
+            self.assertIn("Genki & Sunshine", text)
+            self.assertIn("Genki Spark", text)
+            # md also written
+            self.assertTrue(csv_path.with_name("PRESET-CATALOG.md").exists())
+        finally:
+            for extra in ("PRESET-CATALOG.md", "PRESET-CATALOG.html"):
+                p = csv_path.with_name(extra)
+                if p.exists():
+                    p.unlink()
+            csv_path.unlink(missing_ok=True)
+
+    def test_gap_in_numbering_is_error(self):
+        # row 2 missing -> expected 2, got 3
+        bad = PRESETS_GOOD.replace("\n2,Genki Spark · Honey Lilt,", "\n")
+        rc, out, _ = self._run(bad)
+        self.assertEqual(rc, 1)
+
+    def test_empty_field_is_error(self):
+        bad = PRESETS_GOOD.replace('"Softer sugar, still fast."', '""')
+        rc, out, _ = self._run(bad)
+        self.assertEqual(rc, 1)
+
+    def test_unknown_gender_is_error(self):
+        bad = PRESETS_GOOD.replace("Feminine", "Alien", 1)
+        rc, out, _ = self._run(bad)
+        self.assertEqual(rc, 1)
+
+    def test_variant_of_unknown_base_is_error(self):
+        bad = (
+            "no,name,class,gender,rarity,pitch,pace,signature,description\n"
+            '1,Genki Spark,Genki &amp; Sunshine,Feminine,5,High,Dash,yes,"A comet."\n'
+            '2,Other Base · Honey Lilt,Genki &amp; Sunshine,Feminine,4,High,Lilt,no,"Orphan variant."\n'
+        )
+        rc, out, _ = self._run(bad)
+        self.assertEqual(rc, 1)
+
+    def test_duplicate_name_is_error(self):
+        bad = PRESETS_GOOD.replace(
+            '4,Snowglass,', '4,Genki Spark,'
+        ).replace('5,Snowglass · Bell Burst,', '5,Genki Spark · Bell Burst,')
+        rc, out, _ = self._run(bad)
+        self.assertEqual(rc, 1)
+
+    def test_out_of_expected_pitch_warns_but_passes(self):
+        # "Wet" is not in the expected pitch set -> warning, still exit 0
+        bad = PRESETS_GOOD.replace("1,Genki Spark,", "1,Genki Spark,", 1).replace(
+            "Feminine,5,High,Dash", "Feminine,5,Wet,Dash", 1)
+        rc, out, _ = self._run(bad)
+        self.assertEqual(rc, 0)
+        self.assertIn("warning", out.lower())
+
+    def test_truncated_block_warns(self):
+        # Snowglass has 1 variant vs mode of 2 -> truncation warning
+        bad = (
+            "no,name,class,gender,rarity,pitch,pace,signature,description\n"
+            '1,Genki Spark,Genki &amp; Sunshine,Feminine,5,High,Dash,yes,"A comet."\n'
+            '2,Genki Spark · Honey Lilt,Genki &amp; Sunshine,Feminine,4,High,Lilt,no,"Sugar."\n'
+            '3,Genki Spark · Gravel Tale,Genki &amp; Sunshine,Feminine,3,High,Tale,no,"Scrappy."\n'
+            '4,Snowglass,Kuudere Ice,Feminine,5,Soft,Pulse,yes,"Still."\n'
+            '5,Snowglass · Bell Burst,Kuudere Ice,Feminine,4,High,Burst,no,"Chime."\n'
+        )
+        rc, out, _ = self._run(bad)
+        self.assertEqual(rc, 0)
+        self.assertIn("truncated", out.lower())
+
+    def test_missing_file_returns_2(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = PRESETS.main(["--csv", "/nonexistent/presets.csv"])
+        self.assertEqual(rc, 2)
 
 
 if __name__ == "__main__":
