@@ -47,6 +47,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import audio_fx  # noqa: E402
 
+# CPU tuning: half the logical threads (= physical cores). torch defaults to
+# every logical thread and thrashes on SMT CPUs like the Ryzen 5 5600G.
+_THREADS = max(1, (os.cpu_count() or 4) // 2)
+os.environ.setdefault("OMP_NUM_THREADS", str(_THREADS))
+os.environ.setdefault("MKL_NUM_THREADS", str(_THREADS))
+
 LANGS = {"en": "English", "zh": "Chinese", "ja": "Japanese", "ko": "Korean", "yue": "Cantonese"}
 _CLIP_RE = re.compile(r"^([a-z]+)(\d+)?$")
 
@@ -117,6 +123,25 @@ def load_presets(path: Path) -> list[dict]:
     return rows
 
 
+def _life_score(x, sr) -> float:
+    """0-10 liveliness proxy (level + zero-crossing dynamics) for the UI life
+    lottery: expressive takes score high, flat drones score low."""
+    import numpy as np
+    x = np.asarray(x, dtype=np.float64)
+    if x.size < 64:
+        return 0.0
+    fl = max(8, int(0.04 * sr))
+    nf = max(1, x.size // fl)
+    fr = x[: nf * fl].reshape(nf, fl)
+    rms = np.sqrt((fr ** 2).mean(1)) + 1e-9
+    zcr = (np.diff(np.signbit(fr), axis=1) != 0).mean(1) * float(sr)
+    peak = float(np.max(np.abs(x))) + 1e-9
+    crest = 20.0 * np.log10(peak / (float(np.sqrt(np.mean(x ** 2))) + 1e-9))
+    dyn = float(np.std(rms) / np.mean(rms))
+    zdyn = float(np.std(zcr)) / 1500.0
+    return round(max(0.0, min(10.0, (crest / 6.0 + dyn * 3.0 + zdyn) * 1.6)), 2)
+
+
 def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: str):
     # GPT-SoVITS imports (must run inside its environment)
     sys.path.insert(0, str(gsv_root))
@@ -131,6 +156,11 @@ def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: 
     try:
         tts_config = TTS_Config(tts_config_path)
         tts_pipeline = TTS(tts_config)
+        try:
+            import torch
+            torch.set_num_threads(_THREADS)
+        except Exception:
+            pass
     except SystemExit:
         raise
     except Exception as e:
@@ -212,7 +242,7 @@ def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: 
             "seed": req.get("seed", -1),
             "media_type": "wav",
             "streaming_mode": False,
-            "parallel_infer": False,
+            "parallel_infer": True,
             "repetition_penalty": 1.35,
         }
         if not payload["text"].strip():
@@ -243,7 +273,8 @@ def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: 
         x = audio_fx._peak_limit(x)  # final safety: never write clipped samples
         buf = io.BytesIO()
         sf.write(buf, x, sr, format="WAV")
-        return Response(buf.getvalue(), media_type="audio/wav")
+        return Response(buf.getvalue(), media_type="audio/wav",
+                        headers={"X-Life-Score": str(_life_score(x, sr))})
 
     @APP.post("/api/upload")
     async def upload(request: Request):
@@ -405,6 +436,20 @@ a.dl { font-size: .85rem; }
     <span id="msg"></span>
   </div>
   <audio id="out" controls style="display:none"></audio>
+</div>
+
+<div class="card">
+  <h2>4 · Script queue — paste up to 20 lines, each its own clip</h2>
+  <div class="row">
+    <div style="flex:1"><label>One line per row (uses the voice + controls above; renders while you listen)</label>
+      <textarea id="scriptq" placeholder="Hi. I'm just testing my voice to see how it sounds.&#10;I want to make sure everything sounds natural and clear."></textarea></div>
+  </div>
+  <div class="row">
+    <label><input type="checkbox" id="lottery"> 🎲 Life lottery — 3 takes per line, keep the liveliest</label>
+    <button id="brender">▶ Render script</button>
+    <button id="bplayall" type="button" style="display:none">▶▶ Play all</button>
+  </div>
+  <ol id="queue" class="clipinfo"></ol>
 </div>
 
 <script>
@@ -634,6 +679,95 @@ $("alive").onclick = () => {
   ["humanize", "lift", "breath", "sparkle", "chorus"].forEach(f => { $("fx-" + f).checked = true; });
   $("splitm").value = "cut5";
   msg("alive mode on — fever sampling + humanize + lift + breath + sparkle + chorus; hit 🔊 Speak", false);
+};
+
+// ---- script queue: render N lines one by one, play as they finish ----
+function voiceState() {
+  let ref = null, promptText = "", promptLang = "";
+  const c = currentClip();
+  if ($("tab-preset").classList.contains("on") && c) {
+    ref = c.char + "/" + c.clip; promptText = c.transcript; promptLang = c.lang;
+  } else if (customPath) {
+    ref = "upload:" + customPath; promptText = $("reftext").value.trim();
+    promptLang = $("reflang").value;
+  }
+  return { ref, promptText, promptLang };
+}
+function fxCsv() {
+  return ["robot", "phone", "reverb", "chorus", "echo", "humanize", "lift", "breath", "sparkle", "normalize"]
+    .filter(f => $("fx-" + f).checked).join(",");
+}
+async function batchOne(line) {
+  const v = voiceState();
+  if (!v.ref || !v.promptText) throw new Error("pick a voice first (section 2)");
+  const n = $("lottery").checked ? 3 : 1;
+  let best = null;
+  for (let k = 0; k < n; k++) {
+    const r = await fetch("/api/tts", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ref_audio_path: v.ref, prompt_text: v.promptText, prompt_lang: v.promptLang,
+        text: line, text_lang: $("textlang").value, speed_factor: +$("speed").value, seed: -1,
+        pitch: +$("pitch").value, volume: +$("vol").value, fx: fxCsv(),
+        top_k: +$("top_k").value, top_p: +$("top_p").value,
+        temperature: +$("temperature").value, repetition_penalty: +$("rep").value,
+        text_split_method: "cut0", fragment_interval: +$("gap").value }),
+    });
+    if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.message || ("HTTP " + r.status)); }
+    const score = parseFloat(r.headers.get("X-Life-Score") || "0");
+    const blob = await r.blob();
+    if (!best || score > best.score) best = { blob, score };
+  }
+  return best;
+}
+$("brender").onclick = async () => {
+  const lines = $("scriptq").value.split("\n").map(s => s.trim()).filter(Boolean).slice(0, 20);
+  if (!lines.length) { msg("paste some lines first", true); return; }
+  const ol = $("queue"); ol.innerHTML = "";
+  const items = [];
+  for (let i = 0; i < lines.length; i++) {
+    const li = document.createElement("li");
+    li.textContent = lines[i].slice(0, 60) + " … rendering";
+    ol.appendChild(li);
+    try {
+      const best = await batchOne(lines[i]);
+      let bestScore = best.score;
+      let url = URL.createObjectURL(best.blob);
+      items.push({ url, score: bestScore });
+      li.innerHTML = "";
+      const play = document.createElement("button"); play.type = "button"; play.textContent = "▶";
+      play.onclick = () => new Audio(url).play();
+      const a = document.createElement("a"); a.href = url; a.download = "line" + (i + 1) + ".wav"; a.textContent = " ⬇ ";
+      const rr = document.createElement("button"); rr.type = "button"; rr.textContent = "🎲";
+      rr.title = "reroll — render again, keep it only if livelier";
+      rr.onclick = async () => {
+        rr.disabled = true;
+        try {
+          const b2 = await batchOne(lines[i]);
+          const tail = li.lastChild;
+          if (b2.score > bestScore) {
+            bestScore = b2.score; url = URL.createObjectURL(b2.blob);
+            items[i] = { url, score: bestScore }; a.href = url;
+            tail.textContent = "  life " + bestScore.toFixed(1);
+          } else {
+            tail.textContent = "  life " + bestScore.toFixed(1) + " (reroll was flatter)";
+          }
+        } finally { rr.disabled = false; }
+      };
+      li.append(document.createTextNode(lines[i].slice(0, 60) + " "), play, a, rr,
+                document.createTextNode("  life " + bestScore.toFixed(1)));
+    } catch (e) {
+      li.textContent = lines[i].slice(0, 60) + " … ERROR: " + e;
+    }
+  }
+  if (items.length) {
+    $("bplayall").style.display = "";
+    $("bplayall").onclick = () => {
+      let i = 0;
+      const next = () => { if (i < items.length) { const au = new Audio(items[i++].url); au.onended = next; au.play(); } };
+      next();
+    };
+  }
+  msg("script done — " + items.length + " line(s)", false);
 };
 
 fetch("/api/status").then(r => r.json()).then(j => {
