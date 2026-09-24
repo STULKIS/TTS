@@ -19,8 +19,9 @@ Controls:
   --volume   dB, -2 = quieter, +6 = about twice as loud (a limiter keeps the
              waveform intact at the top — loud, never distorted)
   --fx       comma tokens: robot · phone · reverb · chorus · echo · humanize
-             · sparkle · normalize (normalize = level to -20 dBFS RMS — put it
-             last in the chain; humanize/sparkle = the 'alive' pair)
+             · lift · breath · sparkle · normalize (normalize = level to
+             -20 dBFS RMS — put it last in the chain; humanize + lift + breath
+             = the 'alive' trio; sparkle = air)
 
 Needs numpy (present in the GPT-SoVITS conda env; every other tool in this
 repo is stdlib-only). Reads/writes 16-bit PCM WAV (32-bit float WAV input
@@ -264,7 +265,85 @@ def echo(x: np.ndarray, sr: int, wet: float = 0.45) -> np.ndarray:
     return _peak_limit(x + wet * y)
 
 
-FX_TOKENS = ("robot", "phone", "reverb", "chorus", "echo", "humanize", "sparkle", "normalize")
+def breath(x: np.ndarray, sr: int, amount: float = 1.0) -> np.ndarray:
+    """Insert soft inhales before phrase onsets — the sound of a living speaker.
+
+    Gaps of 100-600 ms between phrases get a gentle breath (filtered noise with
+    a rising swell) tucked into the last ~160 ms of the gap.
+    """
+    _require_numpy()
+    n = len(x)
+    win = max(8, int(0.02 * sr))
+    env = np.sqrt(np.convolve(x.astype(np.float64) ** 2, np.ones(win) / win, mode="same"))
+    thr = 0.04 * (float(np.max(env)) + 1e-12)
+    quiet = env < thr
+    y = x.astype(np.float64).copy()
+    rng = np.random.default_rng(0xB12EA7)
+    i = 0
+    while i < n:
+        if quiet[i]:
+            j = i
+            while j < n and quiet[j]:
+                j += 1
+            gap = (j - i) / sr
+            bl = int(0.16 * sr)
+            start = max(i, j - bl)
+            if 0.1 <= gap <= 0.6 and j < n and (j - start) > int(0.05 * sr):
+                m = j - start
+                noise = _bandpass_fft(rng.standard_normal(m), sr, 700.0, 4500.0)
+                peak = float(np.max(np.abs(noise))) + 1e-9
+                fade = np.sin(np.linspace(0.0, np.pi, m)) ** 1.5
+                lvl = (10.0 ** (-30.0 / 20.0)) * amount * (float(np.max(np.abs(x))) + 1e-9)
+                y[start:j] += (noise / peak) * fade * lvl
+            i = j
+        else:
+            i += 1
+    return _peak_limit(y)
+
+
+def lift(x: np.ndarray, sr: int) -> np.ndarray:
+    """Phrase-level intonation & swell: each phrase gets a pitch accent on a
+    cycling contour (+0.4 … -0.35 st) and a small loudness swell — speech that
+    wanders instead of droning."""
+    _require_numpy()
+    n = len(x)
+    win = max(8, int(0.02 * sr))
+    env = np.sqrt(np.convolve(x.astype(np.float64) ** 2, np.ones(win) / win, mode="same"))
+    thr = 0.05 * (float(np.max(env)) + 1e-12)
+    quiet = env < thr
+    gap_min = int(0.1 * sr)
+    phrases: list[tuple[int, int]] = []
+    i = 0
+    while i < n:
+        while i < n and quiet[i]:
+            i += 1
+        a = i
+        run = 0
+        while i < n and ((not quiet[i]) or run < gap_min):
+            run = run + 1 if quiet[i] else 0
+            i += 1
+        if i - a > gap_min:
+            phrases.append((a, i - run if run else i))
+    contour = (0.4, 0.15, -0.15, -0.35)
+    swells = (1.06, 1.0, 0.96, 1.02)
+    out = np.zeros(n)
+    pos = 0
+    for idx, (a, b) in enumerate(phrases):
+        out[pos:a] = x[pos:a]
+        seg = x[a:b].astype(np.float64)
+        st = contour[idx % 4]
+        if abs(st) > 1e-3 and len(seg) > 64:
+            seg = pitch_shift(seg, sr, st)
+            if len(seg) != b - a:
+                seg = np.interp(np.linspace(0.0, len(seg) - 1, b - a),
+                                np.arange(len(seg)), seg)
+        out[a:b] = seg * swells[idx % 4]
+        pos = b
+    out[pos:] = x[pos:]
+    return _peak_limit(out)
+
+
+FX_TOKENS = ("robot", "phone", "reverb", "chorus", "echo", "humanize", "lift", "breath", "sparkle", "normalize")
 
 
 def parse_fx(spec: str) -> list[str]:
@@ -297,6 +376,10 @@ def apply_fx(x: np.ndarray, sr: int, name: str) -> np.ndarray:
         return echo(x, sr)
     if name == "humanize":
         return humanize(x, sr)
+    if name == "lift":
+        return lift(x, sr)
+    if name == "breath":
+        return breath(x, sr)
     if name == "sparkle":
         return sparkle(x, sr)
     if name == "normalize":

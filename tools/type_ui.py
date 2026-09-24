@@ -203,7 +203,8 @@ def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: 
             "top_k": req.get("top_k", 15),
             "top_p": req.get("top_p", 1.0),
             "temperature": req.get("temperature", 1.0),
-            "text_split_method": "cut5",
+            "text_split_method": req.get("text_split_method", "cut5"),
+            "fragment_interval": req.get("fragment_interval", 0.3),
             "batch_size": 1,
             "batch_threshold": 0.75,
             "split_bucket": True,
@@ -375,6 +376,14 @@ a.dl { font-size: .85rem; }
       <div><label>top_p</label><input type="range" id="top_p" min="0.5" max="1" step="0.05" value="1"></div>
       <div><label>repetition_penalty (↓ = freer, more natural)</label>
         <input type="range" id="rep" min="1" max="2" step="0.05" value="1.2"></div>
+      <div><label>Phrasing</label><select id="splitm">
+        <option value="cut0">one breath (no splits)</option>
+        <option value="cut4">at commas</option>
+        <option value="cut5" selected>at sentence ends (balanced)</option>
+        <option value="cut6">small bites</option>
+      </select></div>
+      <div><label>Pause between phrases (s)</label>
+        <input type="number" id="gap" value="0.3" min="0.05" max="1" step="0.05"></div>
     </details>
   </div>
   <div class="row fx">
@@ -384,6 +393,8 @@ a.dl { font-size: .85rem; }
     <label><input type="checkbox" id="fx-chorus"> chorus</label>
     <label><input type="checkbox" id="fx-echo"> echo</label>
     <label><input type="checkbox" id="fx-humanize"> humanize</label>
+    <label><input type="checkbox" id="fx-lift"> lift</label>
+    <label><input type="checkbox" id="fx-breath"> breath</label>
     <label><input type="checkbox" id="fx-sparkle"> sparkle</label>
     <label><input type="checkbox" id="fx-normalize"> normalize</label>
   </div>
@@ -563,7 +574,7 @@ $("go").onclick = async () => {
   if (!text) { msg("type some text first", true); return; }
   if (!promptText) { msg("the reference transcript is missing", true); return; }
 
-  const fx = ["robot", "phone", "reverb", "chorus", "echo", "humanize", "sparkle", "normalize"]
+  const fx = ["robot", "phone", "reverb", "chorus", "echo", "humanize", "lift", "breath", "sparkle", "normalize"]
     .filter(f => $("fx-" + f).checked).join(",");
   const btn = $("go"); btn.disabled = true;
   msg("synthesizing… (CPU: a few seconds)", false);
@@ -575,7 +586,8 @@ $("go").onclick = async () => {
         text, text_lang: $("textlang").value, speed_factor: +$("speed").value, seed: +$("seed").value,
         pitch: +$("pitch").value, volume: +$("vol").value, fx,
         top_k: +$("top_k").value, top_p: +$("top_p").value,
-        temperature: +$("temperature").value, repetition_penalty: +$("rep").value }),
+        temperature: +$("temperature").value, repetition_penalty: +$("rep").value,
+        text_split_method: $("splitm").value, fragment_interval: +$("gap").value }),
     });
     if (!r.ok) {
       const j = await r.json().catch(() => ({}));
@@ -619,8 +631,9 @@ Object.keys(STYLES).forEach(name => {
 });
 $("alive").onclick = () => {
   $("style-fever").click();
-  ["humanize", "sparkle", "chorus"].forEach(f => { $("fx-" + f).checked = true; });
-  msg("alive mode on — fever sampling + humanize + sparkle + chorus; hit 🔊 Speak", false);
+  ["humanize", "lift", "breath", "sparkle", "chorus"].forEach(f => { $("fx-" + f).checked = true; });
+  $("splitm").value = "cut5";
+  msg("alive mode on — fever sampling + humanize + lift + breath + sparkle + chorus; hit 🔊 Speak", false);
 };
 
 fetch("/api/status").then(r => r.json()).then(j => {
