@@ -36,6 +36,7 @@ import argparse
 import csv
 import io
 import json
+import os
 import re
 import sys
 import tempfile
@@ -562,6 +563,20 @@ def main() -> None:
             f"[abort] {args.gsv_root} does not look like a GPT-SoVITS root "
             f"(no GPT_SoVITS/ dir) — run from the GPT-SoVITS folder or pass --gsv-root")
 
+    # GPT-SoVITS code measures several paths from the CURRENT working directory
+    # (e.g. GPT_SoVITS/sv.py does sys.path.append(f"{os.getcwd()}/GPT_SoVITS/eres2net")
+    # and loads pretrained_models relative to cwd). The stock go-webui.bat therefore
+    # always `cd /d` into the package root first — do the same, whatever folder
+    # this script was launched from.
+    os.chdir(args.gsv_root.resolve())
+
+    # resolve the tts config against the GSV root as well (default is CWD-relative)
+    tts_cfg = Path(args.tts_config)
+    if not tts_cfg.is_absolute() and not tts_cfg.is_file():
+        cand = args.gsv_root / tts_cfg
+        if cand.is_file():
+            tts_cfg = cand
+
     import socket  # noqa: E402
 
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -577,7 +592,7 @@ def main() -> None:
     import uvicorn  # noqa: E402
 
     app = build_app(args.gsv_root.resolve(), args.seeds.resolve(),
-                    args.presets.resolve(), args.tts_config)
+                    args.presets.resolve(), str(tts_cfg))
     url = f"http://{'127.0.0.1' if args.bind in ('0.0.0.0', '::') else args.bind}:{args.port}"
     if args.open:
         import threading  # noqa: E402

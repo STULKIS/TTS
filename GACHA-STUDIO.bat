@@ -29,6 +29,7 @@ echo  First load takes a few minutes - the model warms up.
 echo  The browser opens at http://127.0.0.1:7861 by itself.
 echo  Keep this window open while you use the Studio.
 echo.
+cd /d "%GSV%"
 "%GSV%\runtime\python.exe" "%~dp0tools\type_ui.py" --gsv-root "%GSV%" --seeds "%~dp0seeds" --presets "%~dp0presets.csv" --open
 echo.
 echo  Studio closed.
