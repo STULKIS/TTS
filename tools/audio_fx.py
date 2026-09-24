@@ -16,8 +16,8 @@ Controls:
   --pitch    semitones, +3 = one tone higher, -12 = one octave lower (WSOLA,
              duration is preserved)
   --speed    1.1 = 10% faster (resample)
-  --volume   dB, -2 = quieter, +6 = about twice as loud (soft-clips instead
-             of distorting)
+  --volume   dB, -2 = quieter, +6 = about twice as loud (a limiter keeps the
+             waveform intact at the top — loud, never distorted)
   --fx       comma tokens: robot · phone · reverb · normalize
              (normalize = level to -20 dBFS RMS — put it last in the chain)
 
@@ -133,14 +133,24 @@ def pitch_shift(x: np.ndarray, sr: int, semitones: float) -> np.ndarray:
     return stretched
 
 
+def _peak_limit(x: np.ndarray, ceiling: float = 0.999) -> np.ndarray:
+    """Scale the whole signal down if needed so the peak sits at the ceiling.
+
+    Waveform shape (and dynamics) are preserved — nothing is squared off. Loud
+    settings stay loud; they can no longer destroy a take.
+    """
+    p = float(np.max(np.abs(x)))
+    if p > ceiling > 0:
+        return x * (ceiling / p)
+    return x
+
+
 def apply_volume(x: np.ndarray, db: float) -> np.ndarray:
-    """Gain in dB; soft-clips with tanh instead of distorting when it peaks."""
+    """Gain in dB. If the result would clip, the take is scaled back to just
+    under full scale (a limiter) instead of being distorted."""
     if db == 0.0:
         return x
-    y = x * (10.0 ** (db / 20.0))
-    if float(np.max(np.abs(y))) > 1.0:
-        y = np.tanh(y) / np.tanh(1.0)
-    return y
+    return _peak_limit(x * (10.0 ** (db / 20.0)))
 
 
 def _bandpass_fft(x: np.ndarray, sr: int, lo: float, hi: float) -> np.ndarray:
@@ -174,10 +184,7 @@ def reverb(x: np.ndarray, sr: int, wet: float = 0.4) -> np.ndarray:
             break
         y[d:] += g * x[:-d]
     out = x + wet * y
-    p = float(np.max(np.abs(out)))
-    if p > 1.0:
-        out = out / p
-    return out
+    return _peak_limit(out)
 
 
 def normalize(x: np.ndarray, target_dbfs: float = -20.0) -> np.ndarray:
@@ -186,9 +193,7 @@ def normalize(x: np.ndarray, target_dbfs: float = -20.0) -> np.ndarray:
     if rms < 1e-9:
         return x
     y = x * (10.0 ** (target_dbfs / 20.0) / rms)
-    if float(np.max(np.abs(y))) > 1.0:
-        y = np.tanh(y) / np.tanh(1.0)
-    return y
+    return _peak_limit(y)
 
 
 FX_TOKENS = ("robot", "phone", "reverb", "normalize")

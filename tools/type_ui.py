@@ -222,6 +222,12 @@ def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: 
             x = audio_fx.apply_volume(x, volume)
         for name in audio_fx.parse_fx(str(req.get("fx", "") or "")):
             x = audio_fx.apply_fx(x, sr, name)
+        # trim the engine's trailing inter-fragment gap (~0.3 s of silence),
+        # keeping only a short tail after the last real sound
+        nz = np.nonzero(np.abs(x) > 1e-4)[0]
+        if nz.size:
+            x = x[:min(len(x), int(nz[-1]) + int(0.05 * sr))]
+        x = audio_fx._peak_limit(x)  # final safety: never write clipped samples
         buf = io.BytesIO()
         sf.write(buf, x, sr, format="WAV")
         return Response(buf.getvalue(), media_type="audio/wav")
