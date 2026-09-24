@@ -1,9 +1,11 @@
 # TTS — original character voices, Windows, no NVIDIA GPU
 
-Working notes for a fully-local, legally-clean character-voice pipeline (en · zh · ja · ko).
+Working notes for a fully-local, legally-clean character-voice pipeline (en · zh · ja · ko) — plus
+**Better Anotate**, a Blender add-on for layered, multi-color annotations.
 
 | File | What it is |
 |---|---|
+| `better_anotate/` | **Blender add-on**: layered annotations with per-stroke colors, shapes, eraser, overlay in every editor + convert-to-Grease-Pencil. See `better_anotate/README.md`. |
 | `my-tts-plan.corrected.md` | The plan itself, fact-checked and command-by-command corrected. Start here. |
 | `tts-plan-review.md` | Every diff vs. the original draft, with severity, evidence, and sources. |
 | `local-tts-guide.md` | General reference — GPT-SoVITS: version map, free-Colab training, dataset prep, CPU inference (+CPUFast fork). |
