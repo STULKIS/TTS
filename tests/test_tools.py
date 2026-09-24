@@ -438,12 +438,24 @@ class RenderBatchDryRunTests(unittest.TestCase):
     def test_manifest_rejects_bad_field_count_and_bad_number(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "lines.tsv"
-            path.write_text("a1\tRin\ten\tHi\t1\t1\t2\t9\n", encoding="utf-8")
+            path.write_text("a1\tRin\ten\tHi\t1\t1\t2\t9\textra\n", encoding="utf-8")
             with self.assertRaises(SystemExit):
                 RENDER_BATCH.read_manifest(path)
             path.write_text("a1\tRin\ten\tHi\tnotanumber\n", encoding="utf-8")
             with self.assertRaises(SystemExit):
                 RENDER_BATCH.read_manifest(path)
+
+    def test_manifest_parses_fx_column(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "lines.tsv"
+            path.write_text(
+                "a1\tRin\ten\tHi\t2\t1.0\t0\trobot,reverb\n"
+                "a2\tRin\ten\tPlain\n",
+                encoding="utf-8",
+            )
+            rows = RENDER_BATCH.read_manifest(path)
+            self.assertEqual(rows[0]["fx"], "robot,reverb")
+            self.assertEqual(rows[1]["fx"], None)
 
 
 try:
@@ -515,6 +527,68 @@ class AudioFxTests(unittest.TestCase):
             PRESETS_AUDIO.process(loud_src, loud_out, volume_db=10)
             _, clipped = PRESETS_AUDIO.load_wav(loud_out)
             self.assertLessEqual(float(np.max(np.abs(clipped))), 1.0)
+
+    def test_parse_fx_tokens(self):
+        self.assertEqual(PRESETS_AUDIO.parse_fx("robot, reverb"), ["robot", "reverb"])
+        self.assertEqual(PRESETS_AUDIO.parse_fx("ROBOT,Robot"), ["robot"])
+        self.assertEqual(PRESETS_AUDIO.parse_fx("  "), [])
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            self.assertEqual(PRESETS_AUDIO.parse_fx("robot,warp"), ["robot"])
+        self.assertIn("unknown fx token 'warp'", buf.getvalue())
+
+    def test_robot_spectrum_is_ring_modulated(self):
+        import numpy as np
+        with tempfile.TemporaryDirectory() as directory:
+            src = Path(directory) / "in.wav"
+            self._sine(src, hz=440.0)
+            _, x = PRESETS_AUDIO.load_wav(src)
+            y = PRESETS_AUDIO.robot(x, 24_000)
+            spec = np.abs(np.fft.rfft(y * np.hanning(len(y))))
+            freqs = np.fft.rfftfreq(len(y), 1 / 24_000)
+            peaks = set()
+            for i in np.argsort(spec)[::-1][:2]:
+                if freqs[i] > 100:
+                    peaks.add(int(round(freqs[i] / 5) * 5))
+            self.assertEqual(peaks, {385, 495})  # 440 +/- 55 Hz ring-mod
+
+    def test_phone_bandpass(self):
+        import numpy as np
+        with tempfile.TemporaryDirectory() as directory:
+            src = Path(directory) / "in.wav"
+            self._sine(src, hz=440.0)
+            _, mid = PRESETS_AUDIO.load_wav(src)
+            y_mid = PRESETS_AUDIO.phone(mid, 24_000)
+            self.assertGreater(np.sqrt(np.mean(y_mid ** 2)) / np.sqrt(np.mean(mid ** 2)), 0.9)
+            low = 0.5 * np.sin(2 * np.pi * 100 * np.arange(len(mid)) / 24_000)
+            y_low = PRESETS_AUDIO.phone(low, 24_000)
+            self.assertLess(np.sqrt(np.mean(y_low ** 2)), 0.01)
+
+    def test_reverb_impulse_has_decaying_echos(self):
+        import numpy as np
+        x = np.zeros(24_000)
+        x[0] = 1.0
+        y = PRESETS_AUDIO.reverb(x, 24_000)
+        self.assertTrue(np.all(np.isfinite(y)))
+        self.assertLessEqual(float(np.max(np.abs(y))), 1.0 + 1e-9)
+        for delay_ms, floor in ((25, 0.15), (41, 0.10), (59, 0.08)):
+            self.assertGreater(float(y[int(delay_ms * 24_000 / 1000)]), floor)
+
+    def test_normalize_rms(self):
+        import numpy as np
+        rng = np.random.default_rng(1)
+        x = rng.normal(size=24_000)
+        y = PRESETS_AUDIO.normalize(x)
+        rms_db = 20 * np.log10(float(np.sqrt(np.mean(y ** 2))))
+        self.assertAlmostEqual(rms_db, -20.0, delta=0.5)
+
+    def test_process_with_fx_token_reports_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            src = Path(directory) / "in.wav"
+            self._sine(src)
+            out = Path(directory) / "out.wav"
+            rep = PRESETS_AUDIO.process(src, out, fx="phone,normalize")
+            self.assertEqual(rep["applied"], ["fx phone", "fx normalize"])
 
 
 class CpuConfigTests(unittest.TestCase):
@@ -736,6 +810,51 @@ class PresetsIngestTests(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()) as err:
             rc = PRESETS.main(["--csv", "/nonexistent/presets.csv"])
         self.assertEqual(rc, 2)
+
+    def test_roll_is_deterministic_with_seed(self):
+        csv_path = self._write(PRESETS_GOOD)
+        tmp = str(csv_path)
+        outs = []
+        try:
+            for _ in range(2):
+                with contextlib.redirect_stdout(io.StringIO()) as buf:
+                    rc = PRESETS.main(["--csv", tmp, "--roll", "2", "--seed", "7"])
+                self.assertEqual(rc, 0)
+                outs.append(buf.getvalue())
+            self.assertEqual(outs[0], outs[1])
+            self.assertIn("roll: 2 voice(s) from 5", outs[0])
+            # no catalog written by a roll
+            self.assertFalse(csv_path.with_name("PRESET-CATALOG.md").exists())
+        finally:
+            csv_path.unlink(missing_ok=True)
+
+    def test_roll_respects_rarity_filter(self):
+        csv_path = self._write(PRESETS_GOOD)
+        tmp = str(csv_path)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as buf:
+                rc = PRESETS.main(["--csv", tmp, "--roll", "5", "--rarity", "5", "--seed", "1"])
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("from 2 matching line(s)", out)  # only the two bases
+            self.assertIn("Genki Spark", out)
+            self.assertIn("Snowglass", out)
+            self.assertNotIn("Honey Lilt", out)
+        finally:
+            csv_path.unlink(missing_ok=True)
+
+    def test_find_searches_description(self):
+        csv_path = self._write(PRESETS_GOOD)
+        tmp = str(csv_path)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as buf:
+                rc = PRESETS.main(["--csv", tmp, "--find", "sugar"])
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("1 match(es)", out)
+            self.assertIn("Honey Lilt", out)
+        finally:
+            csv_path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

@@ -4,10 +4,11 @@
 Layout expected (relative to CosyVoice repo root):
     seeds/<char_id>/<lang>.wav     3-10 s reference clip for that character+language  (<=30 s HARD LIMIT)
     seeds/<char_id>/<lang>.txt     exact transcript of that clip (required)
-    lines.tsv                      id<TAB>char_id<TAB>lang<TAB>text  [TAB pitch][TAB speed][TAB volume]
-                                   (UTF-8, '#' = comment; last 3 columns optional —
+    lines.tsv                      id<TAB>char_id<TAB>lang<TAB>text  [TAB pitch][TAB speed][TAB volume][TAB fx]
+                                   (UTF-8, '#' = comment; last 4 columns optional —
                                    pitch in semitones (+3 = one tone up), speed as a
-                                   factor (1.1 = 10% faster), volume in dB (-2))
+                                   factor (1.1 = 10% faster), volume in dB (-2),
+                                   fx = comma tokens: robot,phone,reverb,normalize)
 
 What it does:
   * registers every seed clip ONCE via add_zero_shot_spk() so the speech-tokenizer /
@@ -59,8 +60,8 @@ def read_manifest(path: Path) -> list[dict]:
             if raw.strip().startswith("#") or not raw.strip():
                 continue
             parts = raw.rstrip("\n").split("\t")
-            if len(parts) < 4 or len(parts) > 7:
-                raise SystemExit(f"{path}:{lineno}: expected 4-7 tab-separated fields, got {len(parts)}")
+            if len(parts) < 4 or len(parts) > 8:
+                raise SystemExit(f"{path}:{lineno}: expected 4-8 tab-separated fields, got {len(parts)}")
             line_id, char_id, lang, text = parts[:4]
             if lang not in LANGS:
                 raise SystemExit(f"{path}:{lineno}: lang {lang!r} not in {sorted(LANGS)}")
@@ -73,6 +74,7 @@ def read_manifest(path: Path) -> list[dict]:
                 "pitch": _opt_float(parts[4] if len(parts) > 4 else "", "pitch", where),
                 "speed": _opt_float(parts[5] if len(parts) > 5 else "", "speed", where),
                 "volume": _opt_float(parts[6] if len(parts) > 6 else "", "volume", where),
+                "fx": (parts[7].strip() or None) if len(parts) > 7 else None,
             }
             rows.append(row)
     return rows
@@ -122,6 +124,8 @@ def main() -> None:
                     help="default pitch shift in semitones (+3 = one tone up); per-line column 5 overrides")
     ap.add_argument("--volume", type=float, default=0.0,
                     help="default volume gain in dB (-2 = quieter); per-line column 7 overrides")
+    ap.add_argument("--fx", default="",
+                    help="default fx tokens robot,phone,reverb,normalize; per-line column 8 overrides")
     ap.add_argument("--instruct", default="",
                     help="style string for inference_instruct2, e.g. "
                          "'You are a helpful assistant. 请用四川话表达。<|endofprompt|>'")
@@ -245,9 +249,11 @@ def main() -> None:
             audio = torch.cat([c["tts_speech"] for c in chunks], dim=-1)
             pitch = r["pitch"] if r["pitch"] is not None else args.pitch
             volume = r["volume"] if r["volume"] is not None else args.volume
+            fx_spec = r["fx"] if r["fx"] is not None else args.fx
             fx_note = ""
-            if pitch or volume:  # post-render controls (tools/audio_fx.py, needs numpy)
+            if pitch or volume or fx_spec:  # post-render controls (tools/audio_fx.py, needs numpy)
                 import audio_fx  # tools/ is on sys.path when run as a script
+                fx_names = audio_fx.parse_fx(fx_spec)
                 x = audio.cpu().numpy().squeeze().astype("float64")
                 if pitch:
                     x = audio_fx.pitch_shift(x, cv.sample_rate, float(pitch))
@@ -255,6 +261,9 @@ def main() -> None:
                 if volume:
                     x = audio_fx.apply_volume(x, float(volume))
                     fx_note += f" vol{volume:+g}dB"
+                for name in fx_names:
+                    x = audio_fx.apply_fx(x, cv.sample_rate, name)
+                    fx_note += f" fx:{name}"
                 audio = torch.from_numpy(x.astype("float32"))
             torchaudio.save(str(out), audio, cv.sample_rate)
             secs = audio.shape[-1] / cv.sample_rate

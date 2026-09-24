@@ -17,8 +17,9 @@ Working notes for a fully-local, legally-clean character-voice pipeline (en · z
 | `tools/cpu_config.py` | One-shot CPU-mode fixer for no-NVIDIA boxes (`device: cpu`, `is_half: false` in tts_infer.yaml, idempotent, backed up). Run before first launch. |
 | `tools/preflight.py` | Pre-flight checker: GPT-SoVITS root, CPU config, pretrained weights, seed-pack integrity, ports, disk — one command before your first render. |
 | `tools/presets_ingest.py` | Validates a `presets.csv` voice catalog (numbering, enums, base/variant blocks, dupes) and generates `PRESET-CATALOG.md` + `PRESET-CATALOG.html` with every line mapped to the 58-feature vocabulary. |
-| `tools/audio_fx.py` | Per-line delivery controls applied post-render: pitch (semitones, WSOLA), speed, volume (dB) — backs the optional `lines.tsv` columns 5–7. |
+| `tools/audio_fx.py` | Per-line delivery controls applied post-render: pitch (semitones, WSOLA), speed, volume (dB), fx (robot/phone/reverb/normalize) — backs the optional `lines.tsv` columns 5–8. |
 | `INSTALL.bat` | One-click Windows installer (CPU route): copies the repo to `D:\TTS`, unpacks the GPT-SoVITS package to `D:\GSV`, sets CPU mode, runs pre-flight, creates a desktop icon, opens the WebUI. |
+| `REPAIR.bat` / `UNINSTALL.bat` | Companion one-clicks: re-apply CPU mode + pre-flight, or remove icon/folders. |
 | `tools/lines.sample.tsv` | Example manifest (2 characters × en/zh/ja/ko) — works with both renderers. |
 | `seeds/` | The seed packs: dragon & drake, 5 lines × en/zh/ja/ko each (44.1 kHz mono WAV + verbatim transcripts). Voice briefs in `seeds/README.md`. |
 | `VOICE-PRESETS.md` | 110 named voice presets in 10 groups (mommy, daddy, noir detective, movie-trailer voice, …) — request any by name in chat. |

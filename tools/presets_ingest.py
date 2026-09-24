@@ -29,6 +29,9 @@ Exit codes: 0 = valid (warnings allowed) · 1 = hard validation errors
 Usage:
     python tools/presets_ingest.py                      # presets.csv in cwd
     python tools/presets_ingest.py --csv mine.csv --no-html
+    python tools/presets_ingest.py --roll 3 --rarity 5 --class "Idol & Stage"
+    python tools/presets_ingest.py --roll 5 --seed 7    # reproducible roll
+    python tools/presets_ingest.py --find gravel        # search the catalog
 """
 from __future__ import annotations
 
@@ -400,10 +403,54 @@ render();
     path.write_text(page, encoding="utf-8")
 
 
+def _print_line(r: dict) -> None:
+    tex = f", texture {r['texture']}" if r.get("texture") else ""
+    print(f"#{r['no']:>4}  {r['name']}  ({r['class']}, {r['gender']}, "
+          f"rarity {r['rarity']}, {r['pitch']}/{r['pace']}{tex})")
+    print(f"       \"{r['description']}\"")
+    print(f"       -> {feature_bundle(r)}")
+
+
+def roll_or_find(rows, args) -> int:
+    """--roll / --find: print matching lines instead of writing the catalog."""
+    if args.find:
+        q = args.find.casefold()
+        hay = lambda r: (r["name"] + " " + r["class"] + " " + r["description"]
+                         + " " + (r.get("texture") or "")).casefold()
+        hits = [r for r in rows if q in hay(r)]
+        print(f"find: {len(hits)} match(es) for {args.find!r}")
+        for r in hits:
+            _print_line(r)
+        return 0
+    pool = rows
+    if args.cls:
+        pool = [r for r in pool if r["class"] == args.cls]
+    if args.rarity:
+        pool = [r for r in pool if isinstance(r["rarity"], int) and r["rarity"] == args.rarity]
+    if not pool:
+        print("error: no lines match that filter", file=sys.stderr)
+        return 1
+    n = min(args.roll, len(pool))
+    import random
+    rng = random.Random(args.seed)
+    picks = rng.sample(pool, n)
+    seed_note = f" (seed {args.seed})" if args.seed is not None else ""
+    print(f"roll: {n} voice(s) from {len(pool)} matching line(s){seed_note}")
+    for r in picks:
+        _print_line(r)
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Validate presets.csv and generate PRESET-CATALOG.md/.html")
     ap.add_argument("--csv", default="presets.csv", help="input CSV (default: presets.csv in cwd)")
     ap.add_argument("--no-html", action="store_true", help="skip the HTML catalog")
+    ap.add_argument("--roll", type=int, default=0, metavar="N",
+                    help="gacha roll: print N random lines (with feature bundles); combine with --class/--rarity")
+    ap.add_argument("--class", dest="cls", default="", help="filter roll by class name")
+    ap.add_argument("--rarity", type=int, default=0, help="filter roll by rarity (3|4|5)")
+    ap.add_argument("--find", default="", help="search name/class/description/texture; print matches")
+    ap.add_argument("--seed", type=int, default=None, help="RNG seed for --roll (reproducible rolls)")
     args = ap.parse_args(argv)
     csv_path = Path(args.csv)
     if not csv_path.exists():
@@ -415,10 +462,12 @@ def main(argv=None):
     errors += v_errors
     warnings += v_warnings
     if errors:
-        print(f"presets_ingest: {len(errors)} error(s) in {csv_path.name} — catalog NOT generated:", file=sys.stderr)
+        print(f"presets_ingest: {len(errors)} error(s) in {csv_path.name} — nothing generated:", file=sys.stderr)
         for e in errors:
             print(f"  error: {e}", file=sys.stderr)
         return 1
+    if args.roll or args.find:
+        return roll_or_find(rows, args)
     summary, classes = summarize(rows)
     out_md = csv_path.parent / "PRESET-CATALOG.md"
     write_md(out_md, rows, classes, summary, warnings)

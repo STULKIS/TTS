@@ -5,12 +5,12 @@ Pure post-processing on the rendered WAV — no model, no re-render, so a line's
 delivery can be tuned after the fact ("same take, a touch higher"). This is
 what backs the per-line manifest columns in tools/render_batch.py:
 
-    id<TAB>char<TAB>lang<TAB>text<TAB>[pitch_semitones]<TAB>[speed]<TAB>[volume_db]
+    id<TAB>char<TAB>lang<TAB>text<TAB>[pitch_semitones]<TAB>[speed]<TAB>[volume_db]<TAB>[fx]
 
 Standalone use (tune any wav):
 
     python tools/audio_fx.py --in line.wav --out line_hi.wav \
-        --pitch 3 --speed 1.05 --volume -2
+        --pitch 3 --speed 1.05 --volume -2 --fx "reverb,normalize"
 
 Controls:
   --pitch    semitones, +3 = one tone higher, -12 = one octave lower (WSOLA,
@@ -18,6 +18,8 @@ Controls:
   --speed    1.1 = 10% faster (resample)
   --volume   dB, -2 = quieter, +6 = about twice as loud (soft-clips instead
              of distorting)
+  --fx       comma tokens: robot · phone · reverb · normalize
+             (normalize = level to -20 dBFS RMS — put it last in the chain)
 
 Needs numpy (present in the GPT-SoVITS conda env; every other tool in this
 repo is stdlib-only). Reads/writes 16-bit PCM WAV (32-bit float WAV input
@@ -26,6 +28,7 @@ accepted); multi-channel input is folded to mono.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import wave
 from pathlib import Path
@@ -140,14 +143,95 @@ def apply_volume(x: np.ndarray, db: float) -> np.ndarray:
     return y
 
 
+def _bandpass_fft(x: np.ndarray, sr: int, lo: float, hi: float) -> np.ndarray:
+    """FFT band-pass (stylized FX use; sharp edges, slight ringing)."""
+    X = np.fft.rfft(x)
+    f = np.fft.rfftfreq(len(x), 1 / sr)
+    X[(f < lo) | (f > hi)] = 0
+    return np.fft.irfft(X, n=len(x))
+
+
+def robot(x: np.ndarray, sr: int) -> np.ndarray:
+    """Classic robot voice: hard square drive + low-pass + 55 Hz ring-mod warble."""
+    t = np.arange(len(x)) / sr
+    y = _bandpass_fft(np.sign(x), sr, 0.0, 4000.0)
+    return y * np.sign(np.sin(2 * np.pi * 55.0 * t))
+
+
+def phone(x: np.ndarray, sr: int) -> np.ndarray:
+    """Telephone effect: band-pass 300-3400 Hz."""
+    return _bandpass_fft(x, sr, 300.0, 3400.0)
+
+
+def reverb(x: np.ndarray, sr: int, wet: float = 0.4) -> np.ndarray:
+    """Cheap decaying-tap reverb (FIR comb) — space without a long tail model."""
+    delays = (0.025, 0.041, 0.059, 0.077, 0.097, 0.121)
+    gains = (0.5, 0.4, 0.32, 0.25, 0.18, 0.12)
+    y = np.zeros_like(x)
+    for d_s, g in zip(delays, gains):
+        d = int(round(d_s * sr))
+        if d >= len(x):
+            break
+        y[d:] += g * x[:-d]
+    out = x + wet * y
+    p = float(np.max(np.abs(out)))
+    if p > 1.0:
+        out = out / p
+    return out
+
+
+def normalize(x: np.ndarray, target_dbfs: float = -20.0) -> np.ndarray:
+    """RMS-normalize to a target loudness (use as the LAST fx in the chain)."""
+    rms = float(np.sqrt(np.mean(x ** 2)))
+    if rms < 1e-9:
+        return x
+    y = x * (10.0 ** (target_dbfs / 20.0) / rms)
+    if float(np.max(np.abs(y))) > 1.0:
+        y = np.tanh(y) / np.tanh(1.0)
+    return y
+
+
+FX_TOKENS = ("robot", "phone", "reverb", "normalize")
+
+
+def parse_fx(spec: str) -> list[str]:
+    """'robot, reverb' -> ['robot', 'reverb']. Unknown tokens warn + skip
+    (a typo should never kill a whole batch)."""
+    out: list[str] = []
+    for tok in re.split(r"[,\s]+", (spec or "").strip()):
+        if not tok:
+            continue
+        t = tok.lower()
+        if t in FX_TOKENS:
+            if t not in out:
+                out.append(t)
+        else:
+            print(f"[warn] unknown fx token {tok!r} — skipped "
+                  f"(known: {', '.join(FX_TOKENS)})", file=sys.stderr)
+    return out
+
+
+def apply_fx(x: np.ndarray, sr: int, name: str) -> np.ndarray:
+    if name == "robot":
+        return robot(x, sr)
+    if name == "phone":
+        return phone(x, sr)
+    if name == "reverb":
+        return reverb(x, sr)
+    if name == "normalize":
+        return normalize(x)
+    raise ValueError(f"unknown fx {name!r}")
+
+
 def process(in_path, out_path, pitch: float = 0.0, speed: float = 1.0,
-            volume_db: float = 0.0) -> dict:
-    """Apply pitch/speed/volume to one WAV file. Returns a small report."""
+            volume_db: float = 0.0, fx: str = "") -> dict:
+    """Apply pitch/speed/volume/fx to one WAV file. Returns a small report."""
     _require_numpy()
     in_path, out_path = Path(in_path), Path(out_path)
     if in_path.resolve() == out_path.resolve():
         raise ValueError("in and out must be different files (no in-place mode)")
-    if not (pitch or speed != 1.0 or volume_db):
+    fx_names = parse_fx(fx)
+    if not (pitch or speed != 1.0 or volume_db or fx_names):
         save_wav(out_path, *load_wav(in_path))
         return {"seconds": 0.0, "applied": []}
     sr, x = load_wav(in_path)
@@ -161,23 +245,29 @@ def process(in_path, out_path, pitch: float = 0.0, speed: float = 1.0,
     if volume_db:
         x = apply_volume(x, float(volume_db))
         applied.append(f"volume {float(volume_db):+g} dB")
+    for name in fx_names:
+        x = apply_fx(x, sr, name)
+        applied.append(f"fx {name}")
     save_wav(out_path, sr, x)
     return {"sr": sr, "seconds": len(x) / sr, "applied": applied}
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="Pitch / speed / volume controls for rendered WAVs")
+    ap = argparse.ArgumentParser(description="Pitch / speed / volume / fx controls for rendered WAVs")
     ap.add_argument("--in", dest="src", required=True, type=Path)
     ap.add_argument("--out", dest="dst", required=True, type=Path)
     ap.add_argument("--pitch", type=float, default=0.0, help="semitones (+3 = one tone up)")
     ap.add_argument("--speed", type=float, default=1.0, help="tempo (1.1 = 10%% faster)")
     ap.add_argument("--volume", type=float, default=0.0, help="dB (+6 ~ 2x louder)")
+    ap.add_argument("--fx", default="",
+                    help="comma-separated tokens: " + ",".join(FX_TOKENS) +
+                         " (e.g. 'robot,reverb' — put normalize last)")
     args = ap.parse_args(argv)
     if not args.src.exists():
         print(f"error: {args.src} not found", file=sys.stderr)
         return 2
     try:
-        rep = process(args.src, args.dst, args.pitch, args.speed, args.volume)
+        rep = process(args.src, args.dst, args.pitch, args.speed, args.volume, args.fx)
     except Exception as e:  # noqa: BLE001 - report, don't traceback
         print(f"error: {e}", file=sys.stderr)
         return 1

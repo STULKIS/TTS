@@ -22,6 +22,9 @@ unpacks it to `D:\GSV` with 7-Zip, switches GPT-SoVITS to CPU mode (no
 NVIDIA), runs the pre-flight checks, creates a **"Gacha TTS" desktop icon**,
 and opens the WebUI. The only manual step left in the whole install is the
 one-time ~8 GB package download — no terminal, no typing paths.
+Companions: **`REPAIR.bat`** (re-applies CPU mode + pre-flight when
+something stops working) and **`UNINSTALL.bat`** (icon + optional
+folder removal).
 
 **The manual way (only if the installer misbehaves):**
 
@@ -188,6 +191,7 @@ by name, plus lines from your `presets.csv` catalog.
 | **pitch** | manifest column 5 (semitones, +3 = one tone up) or `--pitch` |
 | **speed** | manifest column 6 (1.1 = 10% faster) or `--speed` |
 | **volume** | manifest column 7 (dB, -2 = quieter) or `--volume` |
+| **fx** | manifest column 8 or `--fx`: `robot` · `phone` · `reverb` · `normalize` (comma list, e.g. `reverb,normalize`) |
 | take | re-render for a fresh take; `--seed` changes the roll |
 | style | `--instruct` (CosyVoice3): rate / volume / emotion / dialect / robot |
 
@@ -210,7 +214,14 @@ duplicate names, unescapes `&amp;`), then generates **`PRESET-CATALOG.md`** and
 **`PRESET-CATALOG.html`** — browse/filter by class, pitch, pace, rarity; click a
 row for its 58-feature bundle. Any line is orderable by number, name, or class:
 *"new character with a **Villain & Mastermind** voice — line 361"* /
-*"*Crimson Script*, but slower". Current values:
+*"*Crimson Script*, but slower".
+
+**Gacha roll / search** (no catalog needed):
+```bash
+python tools/presets_ingest.py --roll 3 --rarity 5 --class "Idol & Stage"   # roll 3 rarity-5 idols
+python tools/presets_ingest.py --roll 5 --seed 7                            # reproducible roll
+python tools/presets_ingest.py --find gravel                                # search any axis
+``` Current values:
 
 - **dragon** — ancient · dry-warm · solid · low · glacial · calm
 - **drake** — middle-aged · dry/papery · solid · mid-low · brisk · volatile-but-controlled
