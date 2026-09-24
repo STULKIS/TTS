@@ -177,6 +177,8 @@ echo  [2/5] GPT-SoVITS OK at %GSV_ROOT%
 
 REM ---------- 3) CPU mode (no NVIDIA) ----------
 echo  [3/5] CPU mode
+echo  setting WebUI language to English...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$f='%GSV_ROOT%\go-webui.bat'; if (Test-Path $f) { $enc=[Text.Encoding]::GetEncoding('ISO-8859-1'); $t=$enc.GetString([IO.File]::ReadAllBytes($f)); $n=$t -replace '(?m)([^\r\n]*webui\.py\s+)zh_CN','${1}en_US'; $n=$n -replace '(?m)^(\s*set\s+lang\s*=\s*)zh_CN(\s*)$','${1}en_US$2'; if ($n -ne $t) { [IO.File]::WriteAllBytes($f, $enc.GetBytes($n)); echo '  [ok] WebUI language set to en_US' } else { echo '  [ok] WebUI already set to English' } } else { echo '  [warn] go-webui.bat not found' }"
 set "PYCMD="
 py -3 --version >nul 2>nul && set "PYCMD=py -3"
 if not defined PYCMD python --version >nul 2>nul && set "PYCMD=python"
