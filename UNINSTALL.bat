@@ -12,8 +12,8 @@ echo  This removes the desktop icon and, if you say so,
 echo  the installed folders. Your .7z download file is NOT touched.
 echo.
 
-REM ---------- desktop icon ----------
-powershell -NoProfile -Command "$p=[Environment]::GetFolderPath('Desktop')+'\Gacha TTS.lnk'; if (Test-Path $p) { Remove-Item $p; echo '  [ok] desktop icon removed' } else { echo '  [ok] no desktop icon found' }"
+REM ---------- desktop icons ----------
+powershell -NoProfile -Command "$d=[Environment]::GetFolderPath('Desktop'); foreach ($n in 'Gacha TTS.lnk','Gacha TTS Studio.lnk') { $p=$d+'\'+$n; if (Test-Path $p) { Remove-Item $p; echo '  [ok] removed '+$n } else { echo '  [ok] no icon: '+$n } }"
 
 REM ---------- GPT-SoVITS engine, D: then C: ----------
 for %%D in (D C) do call :rm_gsv %%D

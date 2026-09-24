@@ -192,8 +192,10 @@ if defined PYCMD (
 
 REM ---------- 4) desktop icon ----------
 echo  [4/5] desktop icon
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws=New-Object -ComObject WScript.Shell; $d=[Environment]::GetFolderPath('Desktop'); $l=$ws.CreateShortcut($d+'\Gacha TTS.lnk'); $l.TargetPath='%GSV_ROOT%\go-webui.bat'; $l.WorkingDirectory='%GSV_ROOT%'; $l.Description='Gacha TTS - type text, hear your characters'; $l.IconLocation='shell32.dll,13'; $l.Save(); echo '  [ok] desktop icon created'"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws=New-Object -ComObject WScript.Shell; $d=[Environment]::GetFolderPath('Desktop'); $l=$ws.CreateShortcut($d+'\Gacha TTS.lnk'); $l.TargetPath='%GSV_ROOT%\go-webui.bat'; $l.WorkingDirectory='%GSV_ROOT%'; $l.Description='Gacha TTS - stock engine WebUI'; $l.IconLocation='shell32.dll,13'; $l.Save(); echo '  [ok] Gacha TTS icon created'"
 if errorlevel 1 echo  [warn] desktop icon could not be created
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws=New-Object -ComObject WScript.Shell; $d=[Environment]::GetFolderPath('Desktop'); $l=$ws.CreateShortcut($d+'\Gacha TTS Studio.lnk'); $l.TargetPath='%TTS_ROOT%\GACHA-STUDIO.bat'; $l.WorkingDirectory='%TTS_ROOT%'; $l.Description='Gacha TTS Studio - presets, controls, type and speak'; $l.IconLocation='shell32.dll,13'; $l.Save(); echo '  [ok] Gacha TTS Studio icon created'"
+if errorlevel 1 echo  [warn] Studio icon could not be created
 
 REM ---------- 5) launch ----------
 echo  [5/5] all done

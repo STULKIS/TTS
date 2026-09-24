@@ -67,7 +67,9 @@ python D:\TTS\tools\preflight.py --gsv-root D:\GSV --seeds D:\TTS\seeds --manife
 ```
 All green → proceed. Any `[fail]` → the line tells you exactly what to fix.
 
-**Step 4 — Start:** `go-webui.bat` (full WebUI) and/or `type_ui.py` (see §2b).
+**Step 4 — Start:** two desktop icons — **Gacha TTS** (the stock engine WebUI,
+Chinese by default) and **Gacha TTS Studio** (presets + controls, see §2b).
+The Studio is the one to use for typing text.
 
 **Troubleshooting (if you see → do this):**
 
@@ -112,16 +114,27 @@ Great for pre-rendered lines; not live chat on CPU.
 This repo's `tools/render_batch_gsv.py` renders a whole TSV manifest against that API
 with per-character model hot-swap.
 
-### 2b. One-command type-a-text WebUI (this repo)
+### 2b. Gacha TTS Studio — the full type-a-text WebUI (this repo)
 
-`tools/type_ui.py` — a single-file WebUI wrapping the same zero-shot engine:
-pick a character from the seed pack (transcript auto-filled), **type your text**,
-click **🔊 Speak** → audio. A second tab takes *any* reference clip you upload
-(5–10 s wav + verbatim transcript) — i.e. any voice you want, not just the pack.
+`tools/type_ui.py` — the one you want. Single-file WebUI wrapping the same
+zero-shot engine, with the full control set:
+
+1. **Gacha preset** — the 1000-line `presets.csv` catalog: search by name or
+   brief, filter by class (25) and rarity, or 🎲 ROLL. Picking a line shows
+   the character brief and sets the controls to its pitch and pace.
+2. **Voice** — the seed pack (dragon & drake × en/zh/ja/ko, transcript
+   auto-filled) or *any* reference clip you upload (5–10 s wav + verbatim
+   transcript) — i.e. any voice you want, not just the pack.
+3. **Text + controls** — type your text, then per line: pitch (−12…+12 st),
+   speed, volume (−12…+12 dB), FX (robot / phone / reverb / normalize), seed.
+   Play it and download the WAV.
+
+Easiest: double-click the **Gacha TTS Studio** desktop icon the installer
+creates (`GACHA-STUDIO.bat` finds `D:\GSV`/`C:\GSV` itself). By hand:
 
 ```powershell
 # terminal opened INSIDE D:\GSV (address bar → cmd → Enter):
-python D:\TTS\tools\type_ui.py --seeds D:\TTS\seeds --open
+runtime\python.exe D:\TTS\tools\type_ui.py --seeds D:\TTS\seeds --open
 # → browser opens http://127.0.0.1:7861 automatically
 # (conda route: conda activate GPTSoVits first; --gsv-root D:\GSV if run elsewhere)
 ```

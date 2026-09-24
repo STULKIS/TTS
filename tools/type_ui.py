@@ -1,36 +1,39 @@
 #!/usr/bin/env python3
-"""Type-and-speak WebUI for GPT-SoVITS — the "I can type text" front end.
+"""Gacha TTS Studio — the type-and-speak WebUI for GPT-SoVITS.
 
-Runs IN your GPT-SoVITS install (same conda env / integrated package), serving a
-single-page app: pick a character from a seed pack (this repo's seeds/ ships
-dragon & drake × en/zh/ja/ko), or upload ANY 5-10 s reference clip, type your
-text, choose the language, click Speak.
+The full front end: gacha preset catalog (this repo's presets.csv, 1000 lines),
+per-line controls (pitch / speed / volume / FX), character seed packs
+(seeds/: dragon & drake x en/zh/ja/ko) or any uploaded reference clip,
+type your text, click Speak, play + download.
 
-Usage (from the GPT-SoVITS repo root, in its environment):
-    python /path/to/TTS/tools/type_ui.py --seeds /path/to/TTS/seeds
-    # or: copy tools/type_ui.py + seeds/ into your GPT-SoVITS folder first:
-    python type_ui.py --seeds seeds
+Runs IN your GPT-SoVITS install (same conda env / integrated package):
+    cd D:\\GSV\\GPT-SoVITS-v2pro-20250604
+    runtime\\python.exe D:\\TTS\\tools\\type_ui.py --seeds D:\\TTS\\seeds
 Then open http://127.0.0.1:7861 in your browser.
+(Or just double-click the "Gacha TTS Studio" desktop icon.)
 
 Options:
     --seeds DIR       seed pack root (dirs: <char>/<lang>[N].wav + .txt)
+    --presets FILE    preset catalog csv (default: <repo>/presets.csv)
     --gsv-root DIR    GPT-SoVITS repo root (default: current directory)
-    --port N          default 7861 (api_v2.py uses 9880)
+    --port N          default 7861 (stock webui 9874, api_v2 9880)
     --bind ADDR       default 127.0.0.1 (local machine tool)
     --tts-config P    default GPT_SoVITS/configs/tts_infer.yaml (v2/v2Pro)
-    --version-tag V   v1/v2/v2Pro/v2ProPlus (default: read from tts_infer.yaml)
+    --open            open the browser automatically when the server starts
 
-Why this exists: api_v2.py is a raw JSON API; this wraps the same
-tts_pipeline.run(req) call with a text box, character picker, and audio player —
-zero-shot cloning of the reference clip, no training needed. Trained
-per-character models work too: set t2s_weights_path/vits_weights_path in
-tts_infer.yaml and the UI uses them automatically.
+How it works: the same in-process tts_pipeline.run(req) call api_v2.py uses.
+Pitch/volume/FX are applied as post-processing with tools/audio_fx.py
+(the tested DSP: pitch = WSOLA-style shift, speed is engine-side
+speed_factor, FX = robot/phone/reverb/normalize).
 
 Depends only on the GPT-SoVITS environment (fastapi/uvicorn/numpy/soundfile).
 """
-from __future__ import annotations
-
+# NOTE: no `from __future__ import annotations` here - FastAPI must see the
+# real Request type object on the handler signature (string annotations on a
+# function defined inside build_app do not resolve, and FastAPI would treat
+# `request` as a required query field -> HTTP 422 on every call).
 import argparse
+import csv
 import io
 import json
 import re
@@ -40,8 +43,20 @@ import uuid
 import wave
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import audio_fx  # noqa: E402
+
 LANGS = {"en": "English", "zh": "Chinese", "ja": "Japanese", "ko": "Korean", "yue": "Cantonese"}
 _CLIP_RE = re.compile(r"^([a-z]+)(\d+)?$")
+
+# preset catalog axis -> engine control value
+PITCH_SHIFT = {  # semitones for the post-hoc pitch shifter
+    "High": 4, "Soft": 2, "Mid": 1, "Neutral": 0, "Low": -3, "Deep": -5, "Synth": 0,
+}
+PACE_SPEED = {  # engine-side speed_factor, from PACE_FEATURES semantics
+    "Dash": 1.25, "Burst": 1.20, "Lilt": 1.15, "Tick": 1.10, "Pulse": 1.00,
+    "Tale": 0.95, "Measure": 0.85, "Drift": 0.80, "Lounge": 0.75, "Pause": 0.70,
+}
 
 
 def scan_pack(seeds: Path) -> list[dict]:
@@ -69,7 +84,36 @@ def scan_pack(seeds: Path) -> list[dict]:
     return items
 
 
-def build_app(gsv_root: Path, seeds: Path, tts_config_path: str):
+def load_presets(path: Path) -> list[dict]:
+    """rows of presets.csv -> [{no, name, class, gender, rarity, pitch, pace,
+    signature, description, pitch_shift, speed}]. Bad rows are skipped."""
+    rows: list[dict] = []
+    if not path.is_file():
+        return rows
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        for r in csv.DictReader(f):
+            try:
+                pitch = (r.get("pitch") or "").strip()
+                pace = (r.get("pace") or "").strip()
+                rows.append({
+                    "no": int(r["no"]),
+                    "name": (r.get("name") or "").strip(),
+                    "class": (r.get("class") or "").strip(),
+                    "gender": (r.get("gender") or "").strip(),
+                    "rarity": int(r["rarity"]),
+                    "pitch": pitch,
+                    "pace": pace,
+                    "signature": (r.get("signature") or "").strip().lower() == "yes",
+                    "description": (r.get("description") or "").strip(),
+                    "pitch_shift": PITCH_SHIFT.get(pitch, 0),
+                    "speed": PACE_SPEED.get(pace, 1.0),
+                })
+            except (ValueError, KeyError, TypeError):
+                continue
+    return rows
+
+
+def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: str):
     # GPT-SoVITS imports (must run inside its environment)
     sys.path.insert(0, str(gsv_root))
     from GPT_SoVITS.TTS_infer_pack.TTS import TTS, TTS_Config  # noqa: E402
@@ -79,7 +123,7 @@ def build_app(gsv_root: Path, seeds: Path, tts_config_path: str):
     import soundfile as sf  # noqa: E402
     from fastapi.responses import HTMLResponse, Response, JSONResponse  # noqa: E402
 
-    print(f"[type-ui] loading GPT-SoVITS pipeline (config={tts_config_path}) …")
+    print(f"[studio] loading GPT-SoVITS pipeline (config={tts_config_path}) ...")
     try:
         tts_config = TTS_Config(tts_config_path)
         tts_pipeline = TTS(tts_config)
@@ -91,8 +135,9 @@ def build_app(gsv_root: Path, seeds: Path, tts_config_path: str):
             "  · Weights missing/incomplete? See local-tts-guide.md §3 (manual model placement).\n"
             "  · CUDA error on a no-GPU box? Run: python tools/cpu_config.py --gsv-root <GPT-SoVITS folder>")
     pack = scan_pack(seeds)
-    print(f"[type-ui] ready: version={tts_config.version} languages={tts_config.languages} "
-          f"pack={len(pack)} clip(s) under {seeds}")
+    presets_rows = load_presets(presets_path)
+    print(f"[studio] ready: version={tts_config.version} languages={tts_config.languages} "
+          f"pack={len(pack)} clip(s) under {seeds} · {len(presets_rows)} presets from {presets_path.name}")
 
     APP = FastAPI()
     uploads = Path(tempfile.gettempdir()) / "type_ui_uploads"
@@ -105,7 +150,14 @@ def build_app(gsv_root: Path, seeds: Path, tts_config_path: str):
     @APP.get("/api/status")
     async def status():
         return {"ready": True, "version": tts_config.version,
-                "languages": tts_config.languages, "pack": len(pack)}
+                "languages": tts_config.languages, "pack": len(pack),
+                "presets": len(presets_rows)}
+
+    @APP.get("/api/presets")
+    async def presets():
+        return {"count": len(presets_rows),
+                "classes": sorted({p["class"] for p in presets_rows}),
+                "presets": presets_rows}
 
     @APP.post("/api/tts")
     async def tts(request: Request):
@@ -120,12 +172,13 @@ def build_app(gsv_root: Path, seeds: Path, tts_config_path: str):
         if not prompt_text:
             return JSONResponse(status_code=400,
                                 content={"message": "prompt_text (verbatim transcript of the reference clip) is required"})
+        text_lang = req.get("text_lang", "en")
         payload = {
             "text": req.get("text", ""),
-            "text_lang": req.get("text_lang", "en"),
+            "text_lang": text_lang,
             "ref_audio_path": ref,
             "prompt_text": prompt_text,
-            "prompt_lang": prompt_lang or req.get("text_lang", "en"),
+            "prompt_lang": req.get("prompt_lang", "") or text_lang,
             "top_k": req.get("top_k", 15),
             "top_p": req.get("top_p", 1.0),
             "temperature": req.get("temperature", 1.0),
@@ -147,8 +200,21 @@ def build_app(gsv_root: Path, seeds: Path, tts_config_path: str):
             sr, audio = next(generator)
         except Exception as e:  # surface the real error in the UI
             return JSONResponse(status_code=500, content={"message": f"tts failed: {e}"})
+        # per-line controls: pitch shift + volume (post-hoc DSP), speed was engine-side
+        x = np.asarray(audio, dtype=np.float32).reshape(-1)
+        try:
+            pitch = float(req.get("pitch", 0.0) or 0.0)
+            volume = float(req.get("volume", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            pitch, volume = 0.0, 0.0
+        if pitch:
+            x = audio_fx.pitch_shift(x, sr, pitch)
+        if volume:
+            x = audio_fx.apply_volume(x, volume)
+        for name in audio_fx.parse_fx(str(req.get("fx", "") or "")):
+            x = audio_fx.apply_fx(x, sr, name)
         buf = io.BytesIO()
-        sf.write(buf, np.asarray(audio, dtype=np.float32).reshape(-1), sr, format="WAV")
+        sf.write(buf, x, sr, format="WAV")
         return Response(buf.getvalue(), media_type="audio/wav")
 
     @APP.post("/api/upload")
@@ -170,18 +236,19 @@ PAGE_HTML = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Type &amp; Speak — GPT-SoVITS</title>
+<title>Gacha TTS Studio</title>
 <style>
 :root { color-scheme: light dark; }
 body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 2rem auto;
-       max-width: 46rem; padding: 0 1rem; line-height: 1.5; }
+       max-width: 50rem; padding: 0 1rem; line-height: 1.5; }
 h1 { margin-bottom: .25rem; }
 .sub { opacity: .7; }
 .card { border: 1px solid rgba(128,128,128,.35); border-radius: .75rem;
         padding: 1rem 1.25rem; margin: 1.25rem 0; }
+h2 { font-size: 1rem; margin: 0 0 .5rem 0; }
 .row { display: flex; flex-wrap: wrap; gap: .75rem; margin: .75rem 0; align-items: center; }
 label { font-size: .85rem; opacity: .8; display: block; margin-bottom: .2rem; }
-select, input[type=number] { font: inherit; padding: .3rem .5rem; border-radius: .4rem;
+select, input[type=number], input[type=text] { font: inherit; padding: .3rem .5rem; border-radius: .4rem;
         border: 1px solid rgba(128,128,128,.5); background: transparent; color: inherit; }
 textarea { width: 100%; box-sizing: border-box; font: inherit; min-height: 5.5rem;
         padding: .5rem .7rem; border-radius: .5rem; border: 1px solid rgba(128,128,128,.5);
@@ -198,46 +265,86 @@ audio { width: 100%; margin-top: .75rem; }
 #tabs button { background: transparent; color: inherit; border: 0; border-bottom: 2px solid transparent;
         border-radius: 0; padding: .4rem .8rem; }
 #tabs button.on { border-bottom-color: #4f7cff; }
+.chip { display: inline-block; font-size: .72rem; padding: .05rem .5rem; margin: .1rem .15rem .1rem 0;
+        border: 1px solid rgba(128,128,128,.5); border-radius: 1rem; opacity: .85; }
+.prow { border: 1px solid rgba(128,128,128,.3); border-radius: .5rem; padding: .4rem .6rem;
+        margin: .35rem 0; cursor: pointer; }
+.prow:hover { border-color: #4f7cff; }
+.pbrief { font-size: .8rem; opacity: .7; margin-top: .15rem; }
+#plist { max-height: 19rem; overflow-y: auto; }
+.apreset { border-top: 1px dashed rgba(128,128,128,.4); margin-top: .6rem; padding-top: .5rem;
+        font-size: .9rem; }
+input[type=range] { width: 9rem; }
+.fx { display: flex; gap: .9rem; flex-wrap: wrap; align-items: center; }
+.fx label { display: flex; align-items: center; gap: .3rem; margin: 0; font-size: .85rem; }
+a.dl { font-size: .85rem; }
 </style>
 </head>
 <body>
-<h1>Type &amp; Speak</h1>
-<p class="sub">GPT-SoVITS zero-shot — reference clip + your text. <span id="ver"></span></p>
+<h1>🎮 Gacha TTS Studio</h1>
+<p class="sub">GPT-SoVITS zero-shot · preset catalog · per-line controls. <span id="ver"></span></p>
 
-<div id="tabs"><button id="tab-preset" class="on" onclick="switchTab('preset')">Preset characters</button>
-<button id="tab-custom" onclick="switchTab('custom')">Any reference clip</button></div>
-
-<div id="pane-preset" class="card">
+<div class="card">
+  <h2>1 · Gacha preset — pick the voice design</h2>
   <div class="row">
-    <div><label>Character</label><select id="char"></select></div>
-    <div><label>Language</label><select id="lang"></select></div>
-    <div><label>Clip</label><select id="clip"></select></div>
+    <div style="flex:1"><label>Search name or brief</label><input type="text" id="q" placeholder="e.g. gravel, whisper, idol..."></div>
+    <div><label>Class</label><select id="cls"></select></div>
+    <div><label>Rarity</label>
+      <select id="rar"><option value="all">any</option><option value="3">★</option><option value="4">★★</option><option value="5">★★★</option></select></div>
+    <div style="align-self:flex-end"><button id="roll" class="ghost">🎲 ROLL</button></div>
   </div>
-  <div class="clipinfo" id="clipinfo"></div>
-</div>
-
-<div id="pane-custom" class="card" style="display:none">
-  <div class="row">
-    <div><label>Reference clip (5–10 s wav)</label><input type="file" id="ref" accept=".wav,audio/*"></div>
-    <div><label>Reference language</label>
-      <select id="reflang"><option>en</option><option>zh</option><option>ja</option><option>ko</option><option>yue</option></select></div>
-  </div>
-  <div><label>Transcript of the clip (verbatim)</label><textarea id="reftext" style="min-height:3.5rem"></textarea></div>
+  <div class="clipinfo" id="pcount">loading catalog…</div>
+  <div id="plist"></div>
+  <div class="apreset" id="apreset" style="display:none"></div>
 </div>
 
 <div class="card">
+  <h2>2 · Voice — the reference it is cloned from</h2>
+  <div id="tabs"><button id="tab-preset" class="on" onclick="switchTab('preset')">Preset characters</button>
+  <button id="tab-custom" onclick="switchTab('custom')">Any reference clip</button></div>
+  <div id="pane-preset">
+    <div class="row">
+      <div><label>Character</label><select id="char"></select></div>
+      <div><label>Language</label><select id="lang"></select></div>
+      <div><label>Clip</label><select id="clip"></select></div>
+    </div>
+    <div class="clipinfo" id="clipinfo"></div>
+  </div>
+  <div id="pane-custom" style="display:none">
+    <div class="row">
+      <div><label>Reference clip (5–10 s wav)</label><input type="file" id="ref" accept=".wav,audio/*"></div>
+      <div><label>Reference language</label>
+        <select id="reflang"><option>en</option><option>zh</option><option>ja</option><option>ko</option><option>yue</option></select></div>
+    </div>
+    <div><label>Transcript of the clip (verbatim)</label><textarea id="reftext" style="min-height:3.5rem"></textarea></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>3 · Your text + controls</h2>
   <div class="row">
     <div style="flex:1"><label>Your text</label><textarea id="text" placeholder="Type anything…"></textarea></div>
   </div>
   <div class="row">
     <div><label>Text language</label>
       <select id="textlang"><option>en</option><option>zh</option><option>ja</option><option>ko</option><option>yue</option></select></div>
-    <div><label>Speed</label><input type="number" id="speed" value="1.0" min="0.5" max="2" step="0.05"></div>
+    <div><label>Pitch <span id="pitchv">0</span> st</label>
+      <input type="range" id="pitch" min="-12" max="12" step="1" value="0"></div>
+    <div><label>Speed</label><input type="number" id="speed" value="1.0" min="0.5" max="1.5" step="0.05"></div>
+    <div><label>Volume <span id="volv">0</span> dB</label>
+      <input type="range" id="vol" min="-12" max="12" step="1" value="0"></div>
     <div><label>Seed (-1 = random)</label><input type="number" id="seed" value="-1"></div>
+  </div>
+  <div class="row fx">
+    <label><input type="checkbox" id="fx-robot"> robot</label>
+    <label><input type="checkbox" id="fx-phone"> phone</label>
+    <label><input type="checkbox" id="fx-reverb"> reverb</label>
+    <label><input type="checkbox" id="fx-normalize"> normalize</label>
   </div>
   <div class="row">
     <button id="go">🔊 Speak</button>
     <button id="sample" type="button" class="ghost">↺ Use sample line</button>
+    <a id="dl" class="dl" style="display:none">⬇ download wav</a>
     <span id="msg"></span>
   </div>
   <audio id="out" controls style="display:none"></audio>
@@ -250,10 +357,11 @@ PACK.forEach(p => (byChar[p.char] = byChar[p.char] || {})[p.lang] =
   (byChar[p.char][p.lang] || []).concat(p));
 
 const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const charsSel = $("char"), langSel = $("lang"), clipSel = $("clip");
 
 function fillChars() {
-  charsSel.innerHTML = Object.keys(byChar).map(c => `<option>${c}</option>`).join("");
+  charsSel.innerHTML = Object.keys(byChar).map(c => `<option>${esc(c)}</option>`).join("");
   if (charsSel.options.length) fillLangs();
   else $("clipinfo").textContent = "(no seed pack found — pass --seeds or use Any reference clip)";
 }
@@ -265,7 +373,7 @@ function fillLangs() {
 function fillClips() {
   const clips = byChar[charsSel.value][langSel.value];
   clipSel.innerHTML = clips.map((c, i) =>
-    `<option value="${i}">${c.clip} (${c.seconds}s)</option>`).join("");
+    `<option value="${i}">${esc(c.clip)} (${c.seconds}s)</option>`).join("");
   showClipInfo();
 }
 function currentClip() {
@@ -307,6 +415,70 @@ function switchTab(t) {
   $("tab-custom").classList.toggle("on", t === "custom");
 }
 
+// ---- preset catalog ----
+let PRESETS = [];
+let activePreset = null;
+function presetMatches(p) {
+  const q = $("q").value.trim().toLowerCase();
+  const cls = $("cls").value;
+  const rar = $("rar").value;
+  if (cls !== "all" && p["class"] !== cls) return false;
+  if (rar !== "all" && String(p.rarity) !== rar) return false;
+  if (q && !(p.name.toLowerCase().includes(q) || p.description.toLowerCase().includes(q))) return false;
+  return true;
+}
+function renderPresets() {
+  const matches = PRESETS.filter(presetMatches);
+  $("pcount").textContent = matches.length + " / " + PRESETS.length + " presets match";
+  const box = $("plist");
+  box.innerHTML = matches.slice(0, 12).map(p =>
+    `<div class="prow" data-no="${p.no}"><b>#${p.no} ${esc(p.name)}</b> ` +
+    `<span class="chip">${esc(p["class"])}</span><span class="chip">${"★".repeat(p.rarity)}</span>` +
+    `<div class="pbrief">${esc(p.description.slice(0, 120))}…</div></div>`).join("") ||
+    `<div class="pbrief">no matches</div>`;
+  box.querySelectorAll(".prow").forEach(el => el.onclick = () => applyPreset(+el.dataset.no));
+}
+function applyPreset(no) {
+  const p = PRESETS.find(x => x.no === no);
+  if (!p) return;
+  activePreset = p;
+  $("pitch").value = p.pitch_shift;
+  $("pitchv").textContent = (p.pitch_shift > 0 ? "+" : "") + p.pitch_shift;
+  $("speed").value = p.speed;
+  $("apreset").style.display = "";
+  $("apreset").innerHTML = `<b>#${p.no} ${esc(p.name)}</b> ` +
+    `<span class="chip">${esc(p["class"])}</span><span class="chip">${esc(p.gender)}</span>` +
+    `<span class="chip">${"★".repeat(p.rarity)}</span><span class="chip">pitch: ${esc(p.pitch)}</span>` +
+    `<span class="chip">pace: ${esc(p.pace)}</span>` +
+    (p.signature ? `<span class="chip">signature</span>` : "") +
+    `<div class="pbrief">${esc(p.description)}</div>` +
+    `<div class="pbrief">controls set to its pitch (${(p.pitch_shift > 0 ? "+" : "") + p.pitch_shift} st) ` +
+    `and pace (speed ${p.speed}). FX is yours to add.</div>`;
+  msg("preset applied", false);
+}
+$("roll").onclick = () => {
+  const matches = PRESETS.filter(presetMatches);
+  if (!matches.length) { msg("no presets match the current filter", true); return; }
+  applyPreset(matches[Math.floor(Math.random() * matches.length)].no);
+};
+$("q").oninput = renderPresets;
+$("cls").onchange = renderPresets;
+$("rar").onchange = renderPresets;
+fetch("/api/presets").then(r => r.json()).then(j => {
+  PRESETS = j.presets;
+  $("cls").innerHTML = `<option value="all">all</option>` +
+    j.classes.map(c => `<option>${esc(c)}</option>`).join("");
+  $("pcount").textContent = j.count + " presets loaded";
+  renderPresets();
+}).catch(() => { $("pcount").textContent = "catalog not found"; });
+
+$("pitch").oninput = e => $("pitchv").textContent =
+  (e.target.value > 0 ? "+" : "") + e.target.value;
+$("vol").oninput = e => $("volv").textContent =
+  (e.target.value > 0 ? "+" : "") + e.target.value;
+
+// ---- speak ----
+let lastURL = null;
 $("go").onclick = async () => {
   const tab = $("tab-preset").classList.contains("on") ? "preset" : "custom";
   let ref = null, promptText = "", promptLang = "";
@@ -323,13 +495,17 @@ $("go").onclick = async () => {
   if (!text) { msg("type some text first", true); return; }
   if (!promptText) { msg("the reference transcript is missing", true); return; }
 
-  const btn = $("go"); btn.disabled = true; msg("synthesizing… (CPU: a few seconds)");
+  const fx = ["robot", "phone", "reverb", "normalize"]
+    .filter(f => $("fx-" + f).checked).join(",");
+  const btn = $("go"); btn.disabled = true;
+  msg("synthesizing… (CPU: a few seconds)", false);
   try {
     const r = await fetch("/api/tts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ref_audio_path: ref, prompt_text: promptText, prompt_lang: promptLang,
-        text, text_lang: $("textlang").value, speed_factor: +$("speed").value, seed: +$("seed").value }),
+        text, text_lang: $("textlang").value, speed_factor: +$("speed").value, seed: +$("seed").value,
+        pitch: +$("pitch").value, volume: +$("vol").value, fx }),
     });
     if (!r.ok) {
       const j = await r.json().catch(() => ({}));
@@ -337,10 +513,16 @@ $("go").onclick = async () => {
       return;
     }
     const blob = await r.blob();
+    if (lastURL) URL.revokeObjectURL(lastURL);
+    lastURL = URL.createObjectURL(blob);
     const out = $("out");
-    out.src = URL.createObjectURL(blob);
+    out.src = lastURL;
     out.style.display = "";
     out.play();
+    const dl = $("dl");
+    dl.href = lastURL;
+    dl.download = "gacha-" + (activePreset ? activePreset.no + "-" : "") + Date.now() + ".wav";
+    dl.style.display = "";
     msg("ok", false);
   } catch (e) {
     msg("error: " + e, true);
@@ -351,7 +533,7 @@ $("go").onclick = async () => {
 function msg(t, isErr) { const m = $("msg"); m.textContent = t; m.className = isErr ? "err" : "ok"; }
 
 fetch("/api/status").then(r => r.json()).then(j => {
-  $("ver").textContent = `v${j.version} · langs: ${j.languages.join(", ")} · ${j.pack} pack clip(s)`;
+  $("ver").textContent = `v${j.version} · langs: ${j.languages.join(", ")} · ${j.pack} pack clip(s) · ${j.presets} presets`;
 }).catch(() => {});
 fillChars();
 </script>
@@ -364,6 +546,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--seeds", type=Path, default=Path("seeds"),
                     help="seed pack root (<char>/<lang>[N].wav + .txt)")
+    ap.add_argument("--presets", type=Path, default=Path(__file__).resolve().parent.parent / "presets.csv",
+                    help="preset catalog csv (default: <repo>/presets.csv)")
     ap.add_argument("--gsv-root", type=Path, default=Path("."),
                     help="GPT-SoVITS repo root (default: cwd)")
     ap.add_argument("--port", type=int, default=7861)
@@ -392,13 +576,14 @@ def main() -> None:
 
     import uvicorn  # noqa: E402
 
-    app = build_app(args.gsv_root.resolve(), args.seeds.resolve(), args.tts_config)
+    app = build_app(args.gsv_root.resolve(), args.seeds.resolve(),
+                    args.presets.resolve(), args.tts_config)
     url = f"http://{'127.0.0.1' if args.bind in ('0.0.0.0', '::') else args.bind}:{args.port}"
     if args.open:
         import threading  # noqa: E402
         import webbrowser  # noqa: E402
         threading.Timer(1.5, lambda: webbrowser.open(url)).start()
-    print(f"[type-ui] serving {url}")
+    print(f"[studio] serving {url}")
     uvicorn.run(app, host=args.bind, port=args.port, log_level="warning")
 
 
