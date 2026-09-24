@@ -163,12 +163,20 @@ def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: 
     @APP.post("/api/tts")
     async def tts(request: Request):
         req = await request.json()
-        # resolve reference audio: server-side pack path, or an uploaded temp file
+        # resolve reference audio: a pack clip (relative to the seeds dir),
+        # a plain absolute path, or an uploaded temp file
         ref = req.get("ref_audio_path", "")
-        if ref.startswith("upload:") and Path(ref[len("upload:"):]).is_file():
-            ref = str(Path(ref[len("upload:"):]).resolve())
-        elif not Path(ref).is_file():
+        if ref.startswith("upload:"):
+            ref_path = Path(ref[len("upload:"):])
+        else:
+            ref_path = Path(ref)
+            if not ref_path.is_absolute() and not ref_path.is_file():
+                cand = seeds / ref
+                if cand.is_file():
+                    ref_path = cand
+        if not ref_path.is_file():
             return JSONResponse(status_code=400, content={"message": f"ref_audio_path not found: {ref}"})
+        ref = str(ref_path.resolve())
         prompt_text = req.get("prompt_text", "")
         if not prompt_text:
             return JSONResponse(status_code=400,
