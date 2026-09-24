@@ -859,3 +859,34 @@ class PresetsIngestTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PageScriptTests(unittest.TestCase):
+    """The Studio page's <script> must PARSE and reference only real element
+    ids. A silent JS syntax error makes every list on the page disappear."""
+
+    @classmethod
+    def setUpClass(cls):
+        import re
+        from pathlib import Path
+        src = Path(__file__).resolve().parent.parent.joinpath("tools", "type_ui.py").read_text(encoding="utf-8")
+        cls.html = src.split('PAGE_HTML = r"""', 1)[1].split('"""', 1)[0]
+        cls.script = re.search(r"<script>(.*)</script>", cls.html, re.S).group(1)
+
+    def test_script_parses(self):
+        import shutil, subprocess, tempfile
+        from pathlib import Path
+        if not shutil.which("node"):
+            self.skipTest("node not available")
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f:
+            f.write(self.script)
+            p = f.name
+        r = subprocess.run(["node", "--check", p], capture_output=True, text=True)
+        Path(p).unlink(missing_ok=True)
+        self.assertEqual(r.returncode, 0, "page <script> has a JS syntax error:\n" + r.stderr[:800])
+
+    def test_script_ids_exist(self):
+        import re
+        used = set(re.findall(r'\$\("([^"]+)"\)', self.script))
+        have = set(re.findall(r'id="([^"]+)"', self.html))
+        self.assertEqual(sorted(used - have), [], "JS references missing element ids")

@@ -290,7 +290,7 @@ def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: 
     return APP
 
 
-PAGE_HTML = """<!doctype html>
+PAGE_HTML = r"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -431,6 +431,7 @@ a.dl { font-size: .85rem; }
   </div>
   <div class="row">
     <button id="go">🔊 Speak</button>
+    <button id="alive" type="button" title="animated sampling + humanize + lift + breath + sparkle + chorus">🔥 Make it alive</button>
     <button id="sample" type="button" class="ghost">↺ Use sample line</button>
     <a id="dl" class="dl" style="display:none">⬇ download wav</a>
     <span id="msg"></span>
