@@ -14,6 +14,14 @@ REM    3. switch GPT-SoVITS to CPU mode for no-NVIDIA boxes
 REM    4. create a "Gacha TTS" desktop icon
 REM    5. open the type-a-text WebUI
 REM  The window ALWAYS stays open at the end and shows any error.
+REM  v4: the 7-Zip path is ALWAYS quoted - an unquoted path with
+REM  spaces like C:\Program Files (x86)\7-Zip\7z.exe makes cmd
+REM  split it at the first space, and 7-Zip ends up receiving
+REM  "Files" as its command: "Unsupported command: Files".
+REM  v4 also: 7-Zip self-test before the long unpack, strips the
+REM  quotes you may type around the .7z path, checks the file is
+REM  about 8 GB, shows the unpack progress live, cleans a partial
+REM  GSV folder before retrying.
 REM  NOTE: no parentheses allowed in echo lines inside blocks -
 REM  cmd parses them as code.
 REM ============================================================
@@ -44,7 +52,7 @@ REM ---------- 0) choose the install drive ----------
 echo  [0/5] choose the install drive
 echo  I need about 10 GB free: the TTS folder + the GPT-SoVITS engine.
 echo.
-for /f "tokens=1,2" %%a in ('powershell -NoProfile -Command "Get-PSDrive -PSProvider FileSystem | ForEach-Object { '{0} {1:N0}' -f $_.Name, ($_.Free/1GB) }"') do echo    %%a:   %%2 GB free
+for /f "tokens=1,2" %%a in ('powershell -NoProfile -Command "Get-PSDrive -PSProvider FileSystem | ForEach-Object { '{0} {1:N0}' -f $_.Name, ($_.Free/1GB) }"') do echo    %%a:   %%b GB free
 echo.
 set "DRV="
 set /p "DRV=Type the drive letter to install on, empty means D if D exists: "
@@ -105,37 +113,62 @@ set /p "SEVENZ=  Where is the .7z file? full path, or N if not downloaded yet: "
 if /i "!SEVENZ!"=="" goto :need_download
 if /i "!SEVENZ!"=="N" goto :need_download
 if /i "!SEVENZ!"=="n" goto :need_download
+set "SEVENZ=!SEVENZ:"=%"
 if not exist "!SEVENZ!" (
     echo  Not found:  !SEVENZ!
+    echo  Type the full path with the file name, for example
+    echo     D:\GPT-SoVITS-v2pro-20250604.7z
+    exit /b 1
+)
+for %%F in ("!SEVENZ!") do set "SEVENZ_BYTES=%%~zF"
+if !SEVENZ_BYTES! LSS 7000000000 (
+    echo  That file is only !SEVENZ_BYTES! bytes, but the package is about 8 GB.
+    echo  The download is probably incomplete. Re-download it, then re-run.
     exit /b 1
 )
 
 set "SEVENZIP="
 if exist "%ProgramFiles%\7-Zip\7z.exe" set "SEVENZIP=%ProgramFiles%\7-Zip\7z.exe"
-if exist "%ProgramFiles(x86)%\7-Zip\7z.exe" set "SEVENZIP=%ProgramFiles(x86)%\7-Zip\7z.exe"
-where 7z.exe >nul 2>nul && set "SEVENZIP=7z.exe"
+if not defined SEVENZIP if exist "%ProgramFiles(x86)%\7-Zip\7z.exe" set "SEVENZIP=%ProgramFiles(x86)%\7-Zip\7z.exe"
+if not defined SEVENZIP where 7z.exe >nul 2>nul && set "SEVENZIP=7z.exe"
 if not defined SEVENZIP (
     echo.
     echo  7-Zip is needed to unpack the package.
     echo  Install it from https://7-zip.org , then re-run this installer.
     exit /b 1
 )
+echo.
+echo  using 7-Zip:  %SEVENZIP%
+"%SEVENZIP%" i >nul 2>&1
+if errorlevel 1 (
+    echo  7-Zip could not be started at that path.
+    echo  Install 7-Zip from https://7-zip.org , then re-run this installer.
+    exit /b 1
+)
 
 echo.
+if exist "%GSV_ROOT%" if not exist "%GSV_ROOT%\go-webui.bat" (
+    echo  Removing the old partial folder %GSV_ROOT% first...
+    rd /s /q "%GSV_ROOT%" 2>nul
+)
 echo  Unpacking !SEVENZ! to %GSV_ROOT%
 echo  8 GB takes a while, 10-30 min on an SSD. Go get a drink.
-echo  Do not close this window.
+echo  You can watch the progress live. Do not close this window.
 echo.
 mkdir "%GSV_ROOT%" 2>nul
-!SEVENZIP! x "!SEVENZ!" -o"%GSV_ROOT%" -y >"%TTS_ROOT%\unpack.log" 2>&1
+"%SEVENZIP%" x "!SEVENZ!" -o"%GSV_ROOT%" -y
 if errorlevel 1 (
-    echo  Unpack failed - details in %TTS_ROOT%\unpack.log
+    echo.
+    echo  Unpack failed - the 7-Zip error is just above. Common causes:
+    echo  - the download is not complete, re-download the 8 GB file
+    echo  - the drive is full
+    echo  Then re-run this installer, it is safe to re-run.
     exit /b 1
 )
 if exist "%GSV_ROOT%" for /d %%F in ("%GSV_ROOT%\*") do if exist "%%~F\go-webui.bat" set "GSV_ROOT=%%~F"
 if not exist "%GSV_ROOT%\go-webui.bat" (
     echo  Unpacked, but go-webui.bat was not found under %GSV_ROOT% .
-    echo  Check %TTS_ROOT%\unpack.log and re-run.
+    echo  Re-run this installer and send me this window's text.
     exit /b 1
 )
 echo  Unpacked OK.
