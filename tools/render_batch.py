@@ -4,7 +4,10 @@
 Layout expected (relative to CosyVoice repo root):
     seeds/<char_id>/<lang>.wav     3-10 s reference clip for that character+language  (<=30 s HARD LIMIT)
     seeds/<char_id>/<lang>.txt     exact transcript of that clip (required)
-    lines.tsv                      id<TAB>char_id<TAB>lang<TAB>text        (UTF-8, '#' = comment)
+    lines.tsv                      id<TAB>char_id<TAB>lang<TAB>text  [TAB pitch][TAB speed][TAB volume]
+                                   (UTF-8, '#' = comment; last 3 columns optional —
+                                   pitch in semitones (+3 = one tone up), speed as a
+                                   factor (1.1 = 10% faster), volume in dB (-2))
 
 What it does:
   * registers every seed clip ONCE via add_zero_shot_spk() so the speech-tokenizer /
@@ -12,6 +15,9 @@ What it does:
   * pins one RNG seed per character so a 200-line batch does not drift between takes
   * optional --instruct for style (dialect/emotion/rate) — uses inference_instruct2,
     which needs the clip present at call time
+  * per-line delivery controls in the manifest (columns 5-7): pitch (semitones),
+    speed (factor), volume (dB) — pitch/volume post-processed via tools/audio_fx.py
+    (tune a line without re-rendering; needs numpy from the GPT-SoVITS env)
   * writes wavs/<char_id>/<id>.wav at 24 kHz mono (CV3) / 24 kHz (CV2)
   * --dry-run validates the manifest + seed clips and prints the plan (speakers,
     missing clips, CPU time estimate) WITHOUT importing torch — run it first
@@ -36,6 +42,16 @@ sys.path.append("third_party/Matcha-TTS")  # noqa: E402  (CosyVoice expects this
 LANGS = {"en", "zh", "ja", "ko", "yue"}
 
 
+def _opt_float(value: str, field: str, where: str):
+    value = value.strip()
+    if not value:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        raise SystemExit(f"{where}: {field} {value!r} is not a number")
+
+
 def read_manifest(path: Path) -> list[dict]:
     rows = []
     with path.open(encoding="utf-8") as f:
@@ -43,12 +59,22 @@ def read_manifest(path: Path) -> list[dict]:
             if raw.strip().startswith("#") or not raw.strip():
                 continue
             parts = raw.rstrip("\n").split("\t")
-            if len(parts) != 4:
-                raise SystemExit(f"{path}:{lineno}: expected 4 tab-separated fields, got {len(parts)}")
-            line_id, char_id, lang, text = parts
+            if len(parts) < 4 or len(parts) > 7:
+                raise SystemExit(f"{path}:{lineno}: expected 4-7 tab-separated fields, got {len(parts)}")
+            line_id, char_id, lang, text = parts[:4]
             if lang not in LANGS:
                 raise SystemExit(f"{path}:{lineno}: lang {lang!r} not in {sorted(LANGS)}")
-            rows.append({"id": line_id, "char": char_id, "lang": lang, "text": text})
+            where = f"{path}:{lineno}"
+            row = {
+                "id": line_id,
+                "char": char_id,
+                "lang": lang,
+                "text": text,
+                "pitch": _opt_float(parts[4] if len(parts) > 4 else "", "pitch", where),
+                "speed": _opt_float(parts[5] if len(parts) > 5 else "", "speed", where),
+                "volume": _opt_float(parts[6] if len(parts) > 6 else "", "volume", where),
+            }
+            rows.append(row)
     return rows
 
 
@@ -90,7 +116,12 @@ def main() -> None:
     ap.add_argument("--seeds", type=Path, default=Path("seeds"))
     ap.add_argument("--out", type=Path, default=Path("wavs"))
     ap.add_argument("--seed", type=int, default=42, help="RNG seed, pinned per character")
-    ap.add_argument("--speed", type=float, default=1.0)
+    ap.add_argument("--speed", type=float, default=1.0,
+                    help="default tempo factor; per-line column 6 of lines.tsv overrides")
+    ap.add_argument("--pitch", type=float, default=0.0,
+                    help="default pitch shift in semitones (+3 = one tone up); per-line column 5 overrides")
+    ap.add_argument("--volume", type=float, default=0.0,
+                    help="default volume gain in dB (-2 = quieter); per-line column 7 overrides")
     ap.add_argument("--instruct", default="",
                     help="style string for inference_instruct2, e.g. "
                          "'You are a helpful assistant. 请用四川话表达。<|endofprompt|>'")
@@ -190,9 +221,11 @@ def main() -> None:
                 print(f"[skip] {out} exists")
                 skipped += 1
                 continue
+            # per-line controls: manifest columns 5-7 override the global flags
+            speed = r["speed"] if r["speed"] is not None else args.speed
             if spk_id in registered:
                 gen = cv.inference_zero_shot(r["text"], "", "", zero_shot_spk_id=spk_id,
-                                             stream=False, speed=args.speed)
+                                             stream=False, speed=speed)
             elif args.instruct:  # fall back to a raw reference + instruction
                 wav = sorted(Path(args.seeds / char_id).glob("*.wav"))
                 if not wav:
@@ -200,7 +233,7 @@ def main() -> None:
                     skipped += 1
                     continue
                 gen = cv.inference_instruct2(r["text"], args.instruct, str(wav[0]),
-                                             stream=False, speed=args.speed)
+                                             stream=False, speed=speed)
             else:
                 skipped += 1
                 continue
@@ -210,10 +243,23 @@ def main() -> None:
                 skipped += 1
                 continue
             audio = torch.cat([c["tts_speech"] for c in chunks], dim=-1)
+            pitch = r["pitch"] if r["pitch"] is not None else args.pitch
+            volume = r["volume"] if r["volume"] is not None else args.volume
+            fx_note = ""
+            if pitch or volume:  # post-render controls (tools/audio_fx.py, needs numpy)
+                import audio_fx  # tools/ is on sys.path when run as a script
+                x = audio.cpu().numpy().squeeze().astype("float64")
+                if pitch:
+                    x = audio_fx.pitch_shift(x, cv.sample_rate, float(pitch))
+                    fx_note += f" pitch{pitch:+g}st"
+                if volume:
+                    x = audio_fx.apply_volume(x, float(volume))
+                    fx_note += f" vol{volume:+g}dB"
+                audio = torch.from_numpy(x.astype("float32"))
             torchaudio.save(str(out), audio, cv.sample_rate)
             secs = audio.shape[-1] / cv.sample_rate
             total += 1
-            print(f"[wav] {out}  {secs:.2f}s  '{r['text'][:36]}'")
+            print(f"[wav] {out}  {secs:.2f}s{fx_note}  '{r['text'][:36]}'")
     print(f"[done] rendered={total} skipped={skipped} out={args.out}")
 
 

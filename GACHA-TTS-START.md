@@ -15,6 +15,16 @@ that: dragon & drake, 5 lines × 4 languages each, with verbatim transcripts.
 
 ## 1. Install on Windows (closest thing to an .exe)
 
+**The one-click way (start here):** double-click **`INSTALL.bat`** in this
+folder. It copies the repo to `D:\TTS`, asks where the ~8 GB GPT-SoVITS
+package is (and gives you the download link if you don't have it yet),
+unpacks it to `D:\GSV` with 7-Zip, switches GPT-SoVITS to CPU mode (no
+NVIDIA), runs the pre-flight checks, creates a **"Gacha TTS" desktop icon**,
+and opens the WebUI. The only manual step left in the whole install is the
+one-time ~8 GB package download — no terminal, no typing paths.
+
+**The manual way (only if the installer misbehaves):**
+
 **Step 0 — 30-second pre-flight** (do this before any download):
 - [ ] **30 GB free disk** (the extracted package is big)
 - [ ] **16 GB RAM** (8 GB minimum) — yours: 16 GB ✅
@@ -151,6 +161,41 @@ mommy, daddy, cold CEO, tsundere, ancient dragon, noir detective, movie-trailer
 voice, … — live in `seeds/README.md` (features) and **`VOICE-PRESETS.md`** (catalog).
 Request any of them in chat: *"a mommy voice for a new character"*,
 *"make drake drier"*.
+
+### 4a. The control menu — everything you can tune
+
+**A. The voice itself** (design-time, in chat — re-audition regenerates the
+reference clips and the new timbre sticks across every line):
+all 58 features from `seeds/README.md` — age · voice weight · pitch ·
+intonation · wetness↔dryness · roughness · smokiness · breathiness ·
+reediness · velvet · vocal fry · voice cracks · nasality · resonance
+(head↔chest) · brightness · placement · vowel openness · rate · volume ·
+intimacy · energy · steadiness · articulation · mumble · rhythm · pausing ·
+emphasis · sentence endings · drawn-out vowels · dynamics · emotion baseline
+· warmth · smile tone · seductiveness · authority · playfulness · menace ·
+composure · softness · sharpness · confidence · anxiety · tiredness ·
+melancholy · smugness · sarcasm · deadpan · theatricality · formality ·
+politeness/keigo · laugh style · sigh style · verbal tics · stutter/lisp ·
+accents/dialects · muttering · whisper — plus any of the 110 named presets
+by name, plus lines from your `presets.csv` catalog.
+
+**B. Per line** (no redesign — the take you already have stays):
+
+| control | where |
+|---|---|
+| text | type anything — en · zh · ja · ko · yue, cross-lingual OK |
+| voice | any seed character, or any 3–10 s reference clip you point it at |
+| **pitch** | manifest column 5 (semitones, +3 = one tone up) or `--pitch` |
+| **speed** | manifest column 6 (1.1 = 10% faster) or `--speed` |
+| **volume** | manifest column 7 (dB, -2 = quieter) or `--volume` |
+| take | re-render for a fresh take; `--seed` changes the roll |
+| style | `--instruct` (CosyVoice3): rate / volume / emotion / dialect / robot |
+
+**C. Per batch:** TSV manifest · `tools/dialogue2tsv.py` (script → manifest) ·
+resume (existing outputs are skipped) · `--threads` · `--dry-run` first.
+
+**D. Per character:** zero-shot (any clip, instant) → fine-tuned model (free
+Colab, spot-on consistency) — hot-swapped per character in the batch.
 
 **Your own catalog (`presets.csv`)** — the full gacha voice list (~1000 lines,
 25 classes, each character = a base row + texture/pace variants). Drop the CSV at

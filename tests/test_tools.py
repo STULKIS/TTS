@@ -37,6 +37,7 @@ RENDER_BATCH = load_tool("render_batch", "render_batch.py")
 CPU_CONFIG = load_tool("cpu_config", "cpu_config.py")
 PREFLIGHT = load_tool("preflight", "preflight.py")
 PRESETS = load_tool("presets_ingest", "presets_ingest.py")
+PRESETS_AUDIO = load_tool("audio_fx", "audio_fx.py")
 
 
 def write_wav(path: Path, *, rate: int = 24_000, seconds: float = 4,
@@ -415,6 +416,105 @@ class RenderBatchDryRunTests(unittest.TestCase):
         # torch/cosyvoice installed; keep the explicit assertion too.
         heavy = ("torch", "torchaudio", "AutoModel", "set_all_random_seed")
         self.assertFalse(any(name in vars(RENDER_BATCH) for name in heavy))
+
+    def test_manifest_parses_optional_control_columns(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "lines.tsv"
+            path.write_text(
+                "a1\tRin\ten\tHello there\n"
+                "a2\tRin\ten\tLouder higher\t3\t1.1\t-2\n"
+                "a3\tRin\ten\tDefaults\n",
+                encoding="utf-8",
+            )
+            rows = RENDER_BATCH.read_manifest(path)
+            self.assertEqual([r["id"] for r in rows], ["a1", "a2", "a3"])
+            self.assertEqual(rows[0]["pitch"], None)
+            self.assertEqual(rows[0]["speed"], None)
+            self.assertEqual(rows[0]["volume"], None)
+            self.assertEqual(rows[1]["pitch"], 3.0)
+            self.assertEqual(rows[1]["speed"], 1.1)
+            self.assertEqual(rows[1]["volume"], -2.0)
+
+    def test_manifest_rejects_bad_field_count_and_bad_number(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "lines.tsv"
+            path.write_text("a1\tRin\ten\tHi\t1\t1\t2\t9\n", encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                RENDER_BATCH.read_manifest(path)
+            path.write_text("a1\tRin\ten\tHi\tnotanumber\n", encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                RENDER_BATCH.read_manifest(path)
+
+
+try:
+    import numpy as _NP  # noqa: F401
+    HAVE_NUMPY = True
+except ImportError:  # pragma: no cover
+    HAVE_NUMPY = False
+
+
+@unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
+class AudioFxTests(unittest.TestCase):
+    def _sine(self, path: Path, sr: int = 24_000, seconds: float = 2.0, hz: float = 440.0):
+        import numpy as np
+        t = np.arange(int(sr * seconds)) / sr
+        x = 0.5 * np.sin(2 * np.pi * hz * t)
+        PRESETS_AUDIO.save_wav(path, sr, x)
+        return x
+
+    @staticmethod
+    def _peak_hz(path: Path, sr: int) -> float:
+        import numpy as np
+        _, a = PRESETS_AUDIO.load_wav(path)
+        spec = np.abs(np.fft.rfft(a * np.hanning(len(a))))
+        freqs = np.fft.rfftfreq(len(a), 1 / sr)
+        return float(freqs[int(np.argmax(spec))])
+
+    def test_pitch_shift_octave_up_preserves_duration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            src = Path(directory) / "in.wav"
+            x = self._sine(src)
+            out = Path(directory) / "out.wav"
+            PRESETS_AUDIO.process(src, out, pitch=12)
+            _, hi = PRESETS_AUDIO.load_wav(out)
+            self.assertEqual(len(hi), len(x))
+            self.assertAlmostEqual(self._peak_hz(out, 24_000), 880, delta=10)
+
+    def test_pitch_shift_octave_down(self):
+        with tempfile.TemporaryDirectory() as directory:
+            src = Path(directory) / "in.wav"
+            self._sine(src)
+            out = Path(directory) / "out.wav"
+            PRESETS_AUDIO.process(src, out, pitch=-12)
+            self.assertAlmostEqual(self._peak_hz(out, 24_000), 220, delta=10)
+
+    def test_speed_halves_duration(self):
+        import numpy as np
+        with tempfile.TemporaryDirectory() as directory:
+            src = Path(directory) / "in.wav"
+            x = self._sine(src)
+            out = Path(directory) / "out.wav"
+            PRESETS_AUDIO.process(src, out, speed=2.0)
+            _, fast = PRESETS_AUDIO.load_wav(out)
+            self.assertEqual(len(fast), len(x) // 2)
+
+    def test_volume_gain_and_soft_clip(self):
+        import numpy as np
+        with tempfile.TemporaryDirectory() as directory:
+            src = Path(directory) / "in.wav"
+            self._sine(src)
+            out = Path(directory) / "out.wav"
+            PRESETS_AUDIO.process(src, out, volume_db=6)
+            _, vol = PRESETS_AUDIO.load_wav(out)
+            self.assertAlmostEqual(float(np.max(np.abs(vol))), 0.5 * 10 ** (6 / 20), places=3)
+            # loud input + gain must stay in range (soft clip, not distortion)
+            loud_src = Path(directory) / "loud.wav"
+            _, x = PRESETS_AUDIO.load_wav(src)
+            PRESETS_AUDIO.save_wav(loud_src, 24_000, x * 1.9)
+            loud_out = Path(directory) / "loud.wav.out"
+            PRESETS_AUDIO.process(loud_src, loud_out, volume_db=10)
+            _, clipped = PRESETS_AUDIO.load_wav(loud_out)
+            self.assertLessEqual(float(np.max(np.abs(clipped))), 1.0)
 
 
 class CpuConfigTests(unittest.TestCase):
