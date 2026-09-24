@@ -17,8 +17,12 @@ echo.
 if exist "%GSV_ROOT%\go-webui.bat" goto :gsv_ok
 if exist "%GSV_ROOT%" for /d %%F in ("%GSV_ROOT%\*") do if exist "%%~F\go-webui.bat" set "GSV_ROOT=%%~F"
 if exist "%GSV_ROOT%\go-webui.bat" goto :gsv_ok
-echo  [fail] GPT-SoVITS not found at D:\GSV
-echo  Run INSTALL.bat first (it unpacks the engine), then run me again.
+set "GSV_ROOT=C:\GSV"
+if exist "%GSV_ROOT%\go-webui.bat" goto :gsv_ok
+if exist "%GSV_ROOT%" for /d %%F in ("%GSV_ROOT%\*") do if exist "%%~F\go-webui.bat" set "GSV_ROOT=%%~F"
+if exist "%GSV_ROOT%\go-webui.bat" goto :gsv_ok
+echo  [fail] GPT-SoVITS not found in D:\GSV or C:\GSV
+echo  Run INSTALL.bat first - it asks where you installed - then run me again.
 pause
 exit /b 1
 :gsv_ok
@@ -29,8 +33,8 @@ py -3 --version >nul 2>nul && set "PYCMD=py -3"
 if not defined PYCMD python --version >nul 2>nul && set "PYCMD=python"
 if not defined PYCMD (
     echo  [fail] no Python found on PATH.
-    echo  Launch the WebUI once from the desktop icon first (it uses the
-    echo  Python bundled with the package), then run me again.
+    echo  Launch the WebUI once from the desktop icon first -
+    echo  it brings its own Python - then run me again.
     pause
     exit /b 1
 )

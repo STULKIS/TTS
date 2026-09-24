@@ -6,23 +6,25 @@ cd /d "%~dp0"
 REM ============================================================
 REM  Gacha TTS - one-click installer (no-NVIDIA / CPU route)
 REM  Double-click it. It will:
-REM    1. put this repo at TTS_ROOT   (D:\TTS, or C:\TTS if no D:)
-REM    2. unpack the GPT-SoVITS v2pro package to GSV_ROOT
-REM       (the ~8 GB .7z is a one-time download, not bundled)
-REM    3. switch GPT-SoVITS to CPU mode (no NVIDIA)
+REM    0. let you CHOOSE the install drive
+REM    1. put this repo at <drive>:\TTS
+REM    2. unpack the GPT-SoVITS v2pro package to <drive>:\GSV
+REM       the ~8 GB .7z is a one-time download, not bundled
+REM    3. switch GPT-SoVITS to CPU mode for no-NVIDIA boxes
 REM    4. create a "Gacha TTS" desktop icon
 REM    5. open the type-a-text WebUI
-REM  The window ALWAYS stays open at the end (shows any errors).
-REM  Want other folders? Edit TTS_ROOT / GSV_ROOT below.
+REM  The window ALWAYS stays open at the end and shows any error.
+REM  NOTE: no parentheses allowed in echo lines inside blocks -
+REM  cmd parses them as code.
 REM ============================================================
 
 REM Never let this window close silently: everything runs as a
-REM subroutine, and the tail always pauses (and shows the exit code).
+REM subroutine, and the tail always pauses and shows the exit code.
 call :main
 if defined CLOSED exit /b 0
 echo.
 echo  ----------------------------------------
-echo  Installer finished (code %ERRORLEVEL%).
+echo  Installer finished. Exit code: %ERRORLEVEL%
 echo  If something above looks wrong, copy this
 echo  whole window's text and send it for help.
 echo  ----------------------------------------
@@ -31,23 +33,35 @@ pause
 exit /b %ERRORLEVEL%
 
 :main
-set "TTS_ROOT=D:\TTS"
-set "GSV_ROOT=D:\GSV"
-if not exist "D:\" (
-    echo.
-    echo  [note] no D: drive found - using C:\TTS and C:\GSV instead.
-    set "TTS_ROOT=C:\TTS"
-    set "GSV_ROOT=C:\GSV"
-)
-
 echo.
 echo  ===============================================
-echo   Gacha TTS - one-click installer (CPU mode)
+echo   Gacha TTS - one-click installer, CPU mode
 echo   repo folder: %~dp0
-echo   target:      %TTS_ROOT%  +  %GSV_ROOT%
 echo  ===============================================
 echo.
-timeout /t 2 >nul
+
+REM ---------- 0) choose the install drive ----------
+echo  [0/5] choose the install drive
+echo  I need about 10 GB free: the TTS folder + the GPT-SoVITS engine.
+echo.
+for /f "tokens=1,2" %%a in ('powershell -NoProfile -Command "Get-PSDrive -PSProvider FileSystem | ForEach-Object { '{0} {1:N0}' -f $_.Name, ($_.Free/1GB) }"') do echo    %%a:   %%2 GB free
+echo.
+set "DRV="
+set /p "DRV=Type the drive letter to install on, empty means D if D exists: "
+set "DRV=!DRV:~0,1!"
+if "!DRV!"=="" (
+    if exist "D:\" set "DRV=D" else set "DRV=C"
+)
+if not exist "!DRV!:\" (
+    echo  No such drive: !DRV!
+    exit /b 1
+)
+set "TTS_ROOT=!DRV!:\TTS"
+set "GSV_ROOT=!DRV!:\GSV"
+echo.
+echo  Installing to:  !TTS_ROOT!  +  !GSV_ROOT!
+echo.
+timeout /t 3 >nul
 
 REM ---------- 1) put this repo at TTS_ROOT ----------
 if /i not "%cd%"=="%TTS_ROOT%" (
@@ -56,11 +70,11 @@ if /i not "%cd%"=="%TTS_ROOT%" (
     echo.
     set /p "GOA=Copy it there now? [Y/n] "
     if /i "!GOA!"=="n" (
-        echo  OK - you can copy the folder to %TTS_ROOT% by hand,
-        echo  then double-click INSTALL.bat again from there.
+        echo  OK - copy the folder to %TTS_ROOT% by hand,
+        echo  then run INSTALL.bat again from there.
         exit /b 1
     )
-    echo  Copying now (can take a couple of minutes)...
+    echo  Copying now, can take a couple of minutes...
     xcopy /E /I /Y /Q "%cd%" "%TTS_ROOT%" >nul
     if errorlevel 1 (
         echo  Copy failed. Close any Explorer window on this folder and re-run.
@@ -85,9 +99,9 @@ if exist "%GSV_ROOT%\go-webui.bat" goto :gsv_ok
 echo  [2/5] GPT-SoVITS not found at %GSV_ROOT%
 echo.
 echo  You need the ~8 GB package  GPT-SoVITS-v2pro-20250604.7z
-echo  (one-time download from Hugging Face - link below).
+echo  one-time download from Hugging Face, link below.
 echo.
-set /p "SEVENZ=  Where is the .7z file? (full path, or N if not downloaded yet) "
+set /p "SEVENZ=  Where is the .7z file? full path, or N if not downloaded yet: "
 if /i "!SEVENZ!"=="" goto :need_download
 if /i "!SEVENZ!"=="N" goto :need_download
 if /i "!SEVENZ!"=="n" goto :need_download
@@ -109,8 +123,8 @@ if not defined SEVENZIP (
 
 echo.
 echo  Unpacking !SEVENZ! to %GSV_ROOT%
-echo  8 GB takes a while (10-30 min on an SSD). Go get a drink.
-echo  (do not close this window)
+echo  8 GB takes a while, 10-30 min on an SSD. Go get a drink.
+echo  Do not close this window.
 echo.
 mkdir "%GSV_ROOT%" 2>nul
 !SEVENZIP! x "!SEVENZ!" -o"%GSV_ROOT%" -y >"%TTS_ROOT%\unpack.log" 2>&1
@@ -152,7 +166,7 @@ echo.
 set /p "RUN=Launch Gacha TTS now? [Y/n] "
 if /i not "!RUN!"=="n" (
     echo  Opening the WebUI - on the 0-Automatic TTS tab, type text and
-    echo  pick a reference clip (5-10 s) to choose the voice.
+    echo  pick a reference clip, 5 to 10 seconds long, to choose the voice.
     start "" "%GSV_ROOT%\go-webui.bat"
 )
 echo.
@@ -162,10 +176,10 @@ exit /b 0
 
 :need_download
 echo.
-echo  Get the package first (one time, ~8 GB):
+echo  Get the package first, one time, ~8 GB:
 echo    https://huggingface.co/lj1995/GPT-SoVITS-windows-package/tree/main
 echo  pick:  GPT-SoVITS-v2pro-20250604.7z
-echo  (if that exact file is gone, pick the newest GPT-SoVITS-v2pro-*.7z)
+echo  if that exact file is gone, pick the newest GPT-SoVITS-v2pro file.
 echo.
-echo  Save it anywhere you like (e.g. D:\downloads\) and re-run this installer.
+echo  Save it anywhere on a big drive, and re-run this installer.
 exit /b 1

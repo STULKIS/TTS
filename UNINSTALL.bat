@@ -3,9 +3,6 @@ setlocal EnableDelayedExpansion
 title Gacha TTS - uninstall
 cd /d "%~dp0"
 
-set "TTS_ROOT=D:\TTS"
-set "GSV_ROOT=D:\GSV"
-
 echo.
 echo  ============================================
 echo   Gacha TTS - uninstall
@@ -18,29 +15,10 @@ echo.
 REM ---------- desktop icon ----------
 powershell -NoProfile -Command "$p=[Environment]::GetFolderPath('Desktop')+'\Gacha TTS.lnk'; if (Test-Path $p) { Remove-Item $p; echo '  [ok] desktop icon removed' } else { echo '  [ok] no desktop icon found' }"
 
-REM ---------- GPT-SoVITS engine ----------
-set /p "RGSV=Remove %GSV_ROOT% (the ~8 GB engine)? [y/N] "
-if /i "!RGSV!"=="y" (
-    if exist "%GSV_ROOT%" (
-        echo  Removing %GSV_ROOT% ...
-        echo  (close the WebUI first if it is open, or files will be locked)
-        rmdir /s /q "%GSV_ROOT%" 2>nul
-        if exist "%GSV_ROOT%" (echo  [warn] still there - close the WebUI and re-run) else (echo  [ok] removed)
-    ) else (echo  [ok] not found, nothing to remove)
-)
-
-REM ---------- repo copy ----------
-set /p "RTTS=Remove %TTS_ROOT% (the TTS folder)? [y/N] "
-if /i "!RTTS!"=="y" (
-    if /i "%cd%"=="%TTS_ROOT%" (
-        echo  [skip] this window is running from inside that folder -
-        echo  after it closes, delete %TTS_ROOT% by hand
-    ) else if exist "%TTS_ROOT%" (
-        echo  Removing %TTS_ROOT% ...
-        rmdir /s /q "%TTS_ROOT%" 2>nul
-        if exist "%TTS_ROOT%" (echo  [warn] still there - close anything using it and re-run) else (echo  [ok] removed)
-    ) else (echo  [ok] not found, nothing to remove)
-)
+REM ---------- GPT-SoVITS engine, D: then C: ----------
+for %%D in (D C) do call :rm_gsv %%D
+REM ---------- repo copy, D: then C: ----------
+for %%D in (D C) do call :rm_tts %%D
 
 echo.
 echo  Done. If you keep the .7z package somewhere, you can reinstall
@@ -48,3 +26,31 @@ echo  any time by double-clicking INSTALL.bat again.
 echo.
 pause
 exit /b 0
+
+:rm_gsv
+set "P=%~1:\GSV"
+set /p "A=Remove %P% , the 8 GB engine? [y/N] "
+if /i "!A!"=="y" (
+    if exist "%P%" (
+        echo  Removing %P% ...
+        echo  Close the WebUI first if it is open, or files will be locked.
+        rmdir /s /q "%P%" 2>nul
+        if exist "%P%" (echo  [warn] still there - close the WebUI and re-run) else (echo  [ok] removed)
+    ) else (echo  [ok] not found, nothing to remove)
+)
+goto :eof
+
+:rm_tts
+set "P=%~1:\TTS"
+set /p "A=Remove %P% , the TTS folder? [y/N] "
+if /i "!A!"=="y" (
+    if /i "%cd%"=="%P%" (
+        echo  [skip] this window is running from inside that folder -
+        echo  after it closes, delete %P% by hand
+    ) else if exist "%P%" (
+        echo  Removing %P% ...
+        rmdir /s /q "%P%" 2>nul
+        if exist "%P%" (echo  [warn] still there - close anything using it and re-run) else (echo  [ok] removed)
+    ) else (echo  [ok] not found, nothing to remove)
+)
+goto :eof
