@@ -68,20 +68,23 @@ def scan_pack(seeds: Path) -> list[dict]:
     for char_dir in sorted(p for p in seeds.iterdir() if p.is_dir()):
         wavs = sorted(char_dir.glob("*.wav"), key=lambda w: (w.stem, w.name))
         for wav in wavs:
-            m = _CLIP_RE.match(wav.stem)
-            lang = m.group(1) if m else wav.stem
-            if lang not in LANGS:
-                continue
-            txt = wav.with_suffix(".txt")
-            transcript = txt.read_text(encoding="utf-8", errors="replace").strip() if txt.exists() else ""
-            seconds = 0.0
             try:
-                with wave.open(str(wav), "rb") as w:
-                    seconds = w.getnframes() / max(1, w.getframerate())
-            except (wave.Error, EOFError, OSError):
-                pass
-            items.append({"char": char_dir.name, "lang": lang,
-                          "clip": wav.name, "transcript": transcript, "seconds": round(seconds, 2)})
+                m = _CLIP_RE.match(wav.stem)
+                lang = m.group(1) if m else wav.stem
+                if lang not in LANGS:
+                    continue
+                txt = wav.with_suffix(".txt")
+                transcript = txt.read_text(encoding="utf-8", errors="replace").strip() if txt.exists() else ""
+                seconds = 0.0
+                try:
+                    with wave.open(str(wav), "rb") as w:
+                        seconds = w.getnframes() / max(1, w.getframerate())
+                except (wave.Error, EOFError, OSError):
+                    pass
+                items.append({"char": char_dir.name, "lang": lang,
+                              "clip": wav.name, "transcript": transcript, "seconds": round(seconds, 2)})
+            except Exception:  # one bad/locked file must never kill the whole scan
+                continue
     return items
 
 
@@ -147,6 +150,15 @@ def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: 
     @APP.get("/", response_class=HTMLResponse)
     async def index():
         return PAGE_HTML.replace("__PACK__", json.dumps(pack, ensure_ascii=False))
+
+    @APP.get("/api/pack")
+    async def pack_list():
+        # live re-scan: recovers from a startup scan that raced an antivirus
+        # copy, and tells the UI exactly where it looked when empty
+        items = scan_pack(seeds)
+        wav_files = len(list(seeds.rglob("*.wav"))) if seeds.is_dir() else 0
+        return {"path": str(seeds), "exists": seeds.is_dir(),
+                "wav_files": wav_files, "count": len(items), "items": items}
 
     @APP.get("/api/status")
     async def status():
@@ -387,8 +399,12 @@ a.dl { font-size: .85rem; }
 <script>
 const PACK = __PACK__;
 const byChar = {};
-PACK.forEach(p => (byChar[p.char] = byChar[p.char] || {})[p.lang] =
-  (byChar[p.char][p.lang] || []).concat(p));
+function rebuildByChar() {
+  for (const k of Object.keys(byChar)) delete byChar[k];
+  PACK.forEach(p => (byChar[p.char] = byChar[p.char] || {})[p.lang] =
+    (byChar[p.char][p.lang] || []).concat(p));
+}
+rebuildByChar();
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -397,8 +413,26 @@ const charsSel = $("char"), langSel = $("lang"), clipSel = $("clip");
 function fillChars() {
   charsSel.innerHTML = Object.keys(byChar).map(c => `<option>${esc(c)}</option>`).join("");
   if (charsSel.options.length) fillLangs();
-  else $("clipinfo").textContent = "(no seed pack found — pass --seeds or use Any reference clip)";
+  else $("clipinfo").textContent = "(no seed pack found" +
+    (window.__PACKDIAG ? " at " + window.__PACKDIAG : "") +
+    " — copy the seeds folder there, or use Any reference clip)";
 }
+async function loadPack() {
+  try {
+    const r = await fetch("/api/pack");
+    const j = await r.json();
+    window.__PACKDIAG = (j.path || "?") + " — exists=" + j.exists + ", wav files=" + j.wav_files;
+    if (j.items && j.items.length) {
+      PACK.length = 0;
+      j.items.forEach(p => PACK.push(p));
+      rebuildByChar();
+      fillChars();
+    } else {
+      fillChars();
+    }
+  } catch (e) { /* keep the embedded pack */ }
+}
+loadPack();
 function fillLangs() {
   const langs = Object.keys(byChar[charsSel.value] || {});
   langSel.innerHTML = langs.map(l => `<option>${l}</option>`).join("");
@@ -604,8 +638,8 @@ fillChars();
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--seeds", type=Path, default=Path("seeds"),
-                    help="seed pack root (<char>/<lang>[N].wav + .txt)")
+    ap.add_argument("--seeds", type=Path, default=Path(__file__).resolve().parent.parent / "seeds",
+                    help="seed pack root (<char>/<lang>[N].wav + .txt; default: <repo>/seeds)")
     ap.add_argument("--presets", type=Path, default=Path(__file__).resolve().parent.parent / "presets.csv",
                     help="preset catalog csv (default: <repo>/presets.csv)")
     ap.add_argument("--gsv-root", type=Path, default=Path("."),
