@@ -292,6 +292,7 @@ a.dl { font-size: .85rem; }
 <body>
 <h1>🎮 Gacha TTS Studio</h1>
 <p class="sub">GPT-SoVITS zero-shot · preset catalog · per-line controls. <span id="ver"></span></p>
+<p id="demobanner" class="err" style="display:none">DEMO ENGINE — this preview renders a test tone instead of a real voice (the real models run only on your PC). Good for trying the controls; audio quality says nothing about the real renders.</p>
 
 <div class="card">
   <h2>1 · Gacha preset — pick the voice design</h2>
@@ -543,6 +544,9 @@ function msg(t, isErr) { const m = $("msg"); m.textContent = t; m.className = is
 
 fetch("/api/status").then(r => r.json()).then(j => {
   $("ver").textContent = `v${j.version} · langs: ${j.languages.join(", ")} · ${j.pack} pack clip(s) · ${j.presets} presets`;
+  if (String(j.version).toLowerCase().indexOf("stub") >= 0) {
+    const b = $("demobanner"); if (b) b.style.display = "";
+  }
 }).catch(() => {});
 fillChars();
 </script>
