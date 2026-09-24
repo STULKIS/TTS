@@ -18,8 +18,9 @@ Controls:
   --speed    1.1 = 10% faster (resample)
   --volume   dB, -2 = quieter, +6 = about twice as loud (a limiter keeps the
              waveform intact at the top — loud, never distorted)
-  --fx       comma tokens: robot · phone · reverb · normalize
-             (normalize = level to -20 dBFS RMS — put it last in the chain)
+  --fx       comma tokens: robot · phone · reverb · chorus · echo · humanize
+             · sparkle · normalize (normalize = level to -20 dBFS RMS — put it
+             last in the chain; humanize/sparkle = the 'alive' pair)
 
 Needs numpy (present in the GPT-SoVITS conda env; every other tool in this
 repo is stdlib-only). Reads/writes 16-bit PCM WAV (32-bit float WAV input
@@ -196,7 +197,74 @@ def normalize(x: np.ndarray, target_dbfs: float = -20.0) -> np.ndarray:
     return _peak_limit(y)
 
 
-FX_TOKENS = ("robot", "phone", "reverb", "normalize")
+def humanize(x: np.ndarray, sr: int) -> np.ndarray:
+    """The 'alive' effect: micro tempo drift per 120 ms block + breathing gain.
+
+    Cloned speech often sounds flat; this reintroduces the tiny timing and
+    loudness wander of a living speaker. Duration preserved; deterministic.
+    """
+    _require_numpy()
+    rng = np.random.default_rng((len(x) * 2654435761) & 0xFFFFFFFF)
+    n = len(x)
+    blk = max(2, int(round(0.12 * sr)))
+    parts = []
+    for i0 in range(0, n, blk):
+        seg = x[i0:i0 + blk]
+        if len(seg) < 2:
+            parts.append(seg)
+            continue
+        f = 1.0 + rng.uniform(-0.025, 0.025)
+        m = max(2, int(round(len(seg) * f)))
+        parts.append(np.interp(np.linspace(0.0, len(seg) - 1, m),
+                               np.arange(len(seg)), seg))
+    y = np.concatenate(parts) if parts else x.copy()
+    if len(y) != n:
+        y = np.interp(np.linspace(0.0, len(y) - 1, n), np.arange(len(y)), y)
+    t = np.arange(n) / sr
+    breathe = 1.0 + 0.08 * np.sin(2 * np.pi * 0.6 * t + rng.uniform(0.0, 6.28)) \
+        + 0.05 * np.sin(2 * np.pi * 2.1 * t)
+    return _peak_limit(y * breathe)
+
+
+def sparkle(x: np.ndarray, sr: int) -> np.ndarray:
+    """Air + presence shelf (+2.5 dB at 3-6 kHz, +3.5 dB above) — cuts the
+    'muffled clone' feel and makes diction glitter."""
+    _require_numpy()
+    X = np.fft.rfft(x)
+    f = np.fft.rfftfreq(len(x), 1.0 / sr)
+    g = 1.0 + 0.33 * ((f >= 3000) & (f < 6000)) + 0.45 * (f >= 6000)
+    return _peak_limit(np.fft.irfft(X * g, n=len(x)))
+
+
+def chorus(x: np.ndarray, sr: int, wet: float = 0.5) -> np.ndarray:
+    """Two detuned delayed copies (14/23 ms, ±0.4%) — thickens a thin take."""
+    _require_numpy()
+    y = x.copy()
+    for d_s, g, det in ((0.014, 0.30, 1.004), (0.023, 0.22, 0.996)):
+        d = int(round(d_s * sr))
+        if d >= len(x):
+            continue
+        src = x[d:]
+        m = max(2, int(round(len(src) * det)))
+        delayed = np.interp(np.linspace(0.0, len(src) - 1, m), np.arange(len(src)), src)
+        k = min(len(y), m)
+        y[:k] += (wet * g) * delayed[:k]
+    return _peak_limit(y)
+
+
+def echo(x: np.ndarray, sr: int, wet: float = 0.45) -> np.ndarray:
+    """Three decaying taps (90/180/280 ms) — a small room behind the words."""
+    _require_numpy()
+    y = np.zeros_like(x)
+    for d_s, g in ((0.09, 0.4), (0.18, 0.22), (0.28, 0.12)):
+        d = int(round(d_s * sr))
+        if d >= len(x):
+            break
+        y[d:] += g * x[:-d]
+    return _peak_limit(x + wet * y)
+
+
+FX_TOKENS = ("robot", "phone", "reverb", "chorus", "echo", "humanize", "sparkle", "normalize")
 
 
 def parse_fx(spec: str) -> list[str]:
@@ -223,6 +291,14 @@ def apply_fx(x: np.ndarray, sr: int, name: str) -> np.ndarray:
         return phone(x, sr)
     if name == "reverb":
         return reverb(x, sr)
+    if name == "chorus":
+        return chorus(x, sr)
+    if name == "echo":
+        return echo(x, sr)
+    if name == "humanize":
+        return humanize(x, sr)
+    if name == "sparkle":
+        return sparkle(x, sr)
     if name == "normalize":
         return normalize(x)
     raise ValueError(f"unknown fx {name!r}")

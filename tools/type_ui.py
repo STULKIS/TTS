@@ -350,11 +350,29 @@ a.dl { font-size: .85rem; }
     <div><label>Volume <span id="volv">0</span> dB</label>
       <input type="range" id="vol" min="-12" max="12" step="1" value="0"></div>
     <div><label>Seed (-1 = random)</label><input type="number" id="seed" value="-1"></div>
+    <details id="expr"><summary>Expression &amp; sampling — the life controls</summary>
+      <div class="row">
+        <button type="button" id="style-subtle">Subtle</button>
+        <button type="button" id="style-balanced">Balanced</button>
+        <button type="button" id="style-animated">Animated</button>
+        <button type="button" id="style-fever">Fever</button>
+      </div>
+      <div><label>Temperature (↑ = more expressive)</label>
+        <input type="range" id="temperature" min="0.1" max="1.5" step="0.05" value="1.0"></div>
+      <div><label>top_k</label><input type="range" id="top_k" min="1" max="50" step="1" value="15"></div>
+      <div><label>top_p</label><input type="range" id="top_p" min="0.5" max="1" step="0.05" value="1"></div>
+      <div><label>repetition_penalty (↓ = freer, more natural)</label>
+        <input type="range" id="rep" min="1" max="2" step="0.05" value="1.2"></div>
+    </details>
   </div>
   <div class="row fx">
     <label><input type="checkbox" id="fx-robot"> robot</label>
     <label><input type="checkbox" id="fx-phone"> phone</label>
     <label><input type="checkbox" id="fx-reverb"> reverb</label>
+    <label><input type="checkbox" id="fx-chorus"> chorus</label>
+    <label><input type="checkbox" id="fx-echo"> echo</label>
+    <label><input type="checkbox" id="fx-humanize"> humanize</label>
+    <label><input type="checkbox" id="fx-sparkle"> sparkle</label>
     <label><input type="checkbox" id="fx-normalize"> normalize</label>
   </div>
   <div class="row">
@@ -511,7 +529,7 @@ $("go").onclick = async () => {
   if (!text) { msg("type some text first", true); return; }
   if (!promptText) { msg("the reference transcript is missing", true); return; }
 
-  const fx = ["robot", "phone", "reverb", "normalize"]
+  const fx = ["robot", "phone", "reverb", "chorus", "echo", "humanize", "sparkle", "normalize"]
     .filter(f => $("fx-" + f).checked).join(",");
   const btn = $("go"); btn.disabled = true;
   msg("synthesizing… (CPU: a few seconds)", false);
@@ -521,7 +539,9 @@ $("go").onclick = async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ref_audio_path: ref, prompt_text: promptText, prompt_lang: promptLang,
         text, text_lang: $("textlang").value, speed_factor: +$("speed").value, seed: +$("seed").value,
-        pitch: +$("pitch").value, volume: +$("vol").value, fx }),
+        pitch: +$("pitch").value, volume: +$("vol").value, fx,
+        top_k: +$("top_k").value, top_p: +$("top_p").value,
+        temperature: +$("temperature").value, repetition_penalty: +$("rep").value }),
     });
     if (!r.ok) {
       const j = await r.json().catch(() => ({}));
@@ -547,6 +567,27 @@ $("go").onclick = async () => {
   }
 };
 function msg(t, isErr) { const m = $("msg"); m.textContent = t; m.className = isErr ? "err" : "ok"; }
+
+const STYLES = {
+  subtle:   { temperature: 0.4, top_k: 10, top_p: 0.8, rep: 1.35, speed: 0.95 },
+  balanced: { temperature: 1.0, top_k: 15, top_p: 1.0, rep: 1.2,  speed: 1.0 },
+  animated: { temperature: 1.15, top_k: 20, top_p: 1.0, rep: 1.15, speed: 1.05 },
+  fever:    { temperature: 1.4, top_k: 30, top_p: 1.0, rep: 1.1,  speed: 1.1 },
+};
+Object.keys(STYLES).forEach(name => {
+  const b = $("style-" + name);
+  if (b) b.onclick = () => {
+    const s = STYLES[name];
+    $("temperature").value = s.temperature; $("top_k").value = s.top_k;
+    $("top_p").value = s.top_p; $("rep").value = s.rep; $("speed").value = s.speed;
+    msg("style: " + name, false);
+  };
+});
+$("alive").onclick = () => {
+  $("style-fever").click();
+  ["humanize", "sparkle", "chorus"].forEach(f => { $("fx-" + f).checked = true; });
+  msg("alive mode on — fever sampling + humanize + sparkle + chorus; hit 🔊 Speak", false);
+};
 
 fetch("/api/status").then(r => r.json()).then(j => {
   $("ver").textContent = `v${j.version} · langs: ${j.languages.join(", ")} · ${j.pack} pack clip(s) · ${j.presets} presets`;
