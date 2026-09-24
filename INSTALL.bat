@@ -113,7 +113,7 @@ set /p "SEVENZ=  Where is the .7z file? full path, or N if not downloaded yet: "
 if /i "!SEVENZ!"=="" goto :need_download
 if /i "!SEVENZ!"=="N" goto :need_download
 if /i "!SEVENZ!"=="n" goto :need_download
-set "SEVENZ=!SEVENZ:"=%"
+set "SEVENZ=!SEVENZ:"=!"
 if not exist "!SEVENZ!" (
     echo  Not found:  !SEVENZ!
     echo  Type the full path with the file name, for example
