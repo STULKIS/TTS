@@ -125,9 +125,14 @@ zero-shot engine, with the full control set:
 2. **Voice** — the seed pack (dragon & drake × en/zh/ja/ko, transcript
    auto-filled) or *any* reference clip you upload (5–10 s wav + verbatim
    transcript) — i.e. any voice you want, not just the pack.
-3. **Text + controls** — type your text, then per line: pitch (−12…+12 st),
-   speed, volume (−12…+12 dB), FX (robot / phone / reverb / normalize), seed.
-   Play it and download the WAV.
+3. **Text + controls** — type your text, then choose **Natural**, **Alive**, or
+   **Dramatic** sampling. **🔥 Make it alive** uses moderate variation,
+   forwards repetition penalty, and a restrained humanize/phrase-lift pass;
+   it deliberately avoids chorus, robot filters, and synthetic breath. You can
+   still tune pitch (−12…+12 st), speed, volume (−12…+12 dB), FX, and seed.
+   Play it and download the WAV. The reference clip gives timbre; a Performance
+   take gives the new line its energy.
+
 
 Easiest: double-click the **Gacha TTS Studio** desktop icon the installer
 creates (`GACHA-STUDIO.bat` finds `D:\GSV`/`C:\GSV` itself). By hand:
@@ -204,7 +209,7 @@ by name, plus lines from your `presets.csv` catalog.
 | **pitch** | manifest column 5 (semitones, +3 = one tone up) or `--pitch` |
 | **speed** | manifest column 6 (1.1 = 10% faster) or `--speed` |
 | **volume** | manifest column 7 (dB, -2 = quieter) or `--volume` |
-| **fx** | manifest column 8 or `--fx`: `robot` · `phone` · `reverb` · `normalize` (comma list, e.g. `reverb,normalize`) |
+| **fx** | manifest column 8 or `--fx`: `robot` · `phone` · `reverb` · `normalize` · `alive` (restrained humanize + lift) |
 | take | re-render for a fresh take; `--seed` changes the roll |
 | style | `--instruct` (CosyVoice3): rate / volume / emotion / dialect / robot |
 

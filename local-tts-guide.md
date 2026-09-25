@@ -196,7 +196,7 @@ CPU setup lives in `GPT_SoVITS/configs/tts_infer.yaml` (`device: cpu`, `is_half:
 Endpoints: `GET/POST /tts`, `GET /set_refer_audio`, `GET /set_gpt_weights`,
 `GET /set_sovits_weights`, `GET /control?command=restart|exit`. Key `/tts` params:
 `text`, `text_lang`, `ref_audio_path`, `prompt_text`, `prompt_lang`, `seed`, `speed_factor`,
-`repetition_penalty` (default 1.35), `streaming_mode`, `media_type=wav`.
+`repetition_penalty` (default 1.35), `top_k`, `top_p`, `temperature`, `streaming_mode`, `media_type=wav`. The Studio uses moderate sampling by default; avoid extreme temperature if you want clean, human phonemes.
 Smoke test:
 
 ```bash

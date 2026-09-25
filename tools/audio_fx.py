@@ -19,9 +19,9 @@ Controls:
   --volume   dB, -2 = quieter, +6 = about twice as loud (a limiter keeps the
              waveform intact at the top — loud, never distorted)
   --fx       comma tokens: robot · phone · reverb · chorus · echo · humanize
-             · lift · breath · sparkle · normalize (normalize = level to
-             -20 dBFS RMS — put it last in the chain; humanize + lift + breath
-             = the 'alive' trio; sparkle = air)
+             · lift · breath · sparkle · normalize · alive (normalize = level to
+             -20 dBFS RMS — put it last; alive expands to the restrained,
+             non-metallic humanize + lift pair)
 
 Needs numpy (present in the GPT-SoVITS conda env; every other tool in this
 repo is stdlib-only). Reads/writes 16-bit PCM WAV (32-bit float WAV input
@@ -198,33 +198,61 @@ def normalize(x: np.ndarray, target_dbfs: float = -20.0) -> np.ndarray:
     return _peak_limit(y)
 
 
-def humanize(x: np.ndarray, sr: int) -> np.ndarray:
-    """The 'alive' effect: micro tempo drift per 120 ms block + breathing gain.
+def _smooth_random_curve(n: int, points: int, rng) -> np.ndarray:
+    """Return a deterministic, smooth curve in roughly [-1, 1].
 
-    Cloned speech often sounds flat; this reintroduces the tiny timing and
-    loudness wander of a living speaker. Duration preserved; deterministic.
+    A low-rate curve is much safer for speech than independently changing every
+    120 ms block: hard block boundaries can sound like clicks, chorusing, or a
+    tiny robot.  This helper deliberately contains no uncorrelated sample noise.
+    """
+    if n < 2:
+        return np.zeros(n, dtype=np.float64)
+    points = max(2, min(points, n))
+    anchors = rng.normal(0.0, 1.0, points)
+    curve = np.interp(np.linspace(0.0, points - 1, n), np.arange(points), anchors)
+    # A short Hann-like moving average removes sharp changes without scipy.
+    span = min(n, max(3, int(round(n / max(points * 2, 1)))))
+    if span > 2 and span % 2 == 0:
+        span -= 1
+    kernel = np.hanning(span)
+    kernel /= max(float(kernel.sum()), 1e-12)
+    curve = np.convolve(curve, kernel, mode="same")
+    scale = max(float(np.max(np.abs(curve))), 1e-12)
+    return curve / scale
+
+
+def humanize(x: np.ndarray, sr: int) -> np.ndarray:
+    """Add restrained, natural micro-dynamics without changing the waveform timing.
+
+    The previous implementation re-sampled independent 120 ms blocks. That can
+    create joins and a synthetic wobble, especially on sustained vowels. A real
+    speaker's liveliness is better approximated here by a very small, correlated
+    loudness drift that is gated away from silence. It is intentionally subtle:
+    the model/reference performance supplies the emotion; this effect only stops
+    an otherwise good take from feeling perfectly level.
     """
     _require_numpy()
-    rng = np.random.default_rng((len(x) * 2654435761) & 0xFFFFFFFF)
     n = len(x)
-    blk = max(2, int(round(0.12 * sr)))
-    parts = []
-    for i0 in range(0, n, blk):
-        seg = x[i0:i0 + blk]
-        if len(seg) < 2:
-            parts.append(seg)
-            continue
-        f = 1.0 + rng.uniform(-0.025, 0.025)
-        m = max(2, int(round(len(seg) * f)))
-        parts.append(np.interp(np.linspace(0.0, len(seg) - 1, m),
-                               np.arange(len(seg)), seg))
-    y = np.concatenate(parts) if parts else x.copy()
-    if len(y) != n:
-        y = np.interp(np.linspace(0.0, len(y) - 1, n), np.arange(len(y)), y)
-    t = np.arange(n) / sr
-    breathe = 1.0 + 0.08 * np.sin(2 * np.pi * 0.6 * t + rng.uniform(0.0, 6.28)) \
-        + 0.05 * np.sin(2 * np.pi * 2.1 * t)
-    return _peak_limit(y * breathe)
+    if n < 64:
+        return x
+    rng = np.random.default_rng((len(x) * 2654435761) & 0xFFFFFFFF)
+    frame = min(n, max(8, int(round(0.035 * sr))))
+    count = max(1, n // frame)
+    frames = x[:count * frame].reshape(count, frame)
+    env = np.sqrt(np.mean(frames.astype(np.float64) ** 2, axis=1) + 1e-12)
+    peak = float(np.max(np.abs(x))) + 1e-12
+    # Keep the modulation out of pauses. The floor also works for very quiet,
+    # normalized clips where an absolute threshold would incorrectly gate speech.
+    gate = np.repeat(env > max(float(np.percentile(env, 18)) * 1.8, peak * 0.008), frame)
+    gate = np.pad(gate, (0, max(0, n - len(gate))), constant_values=False)[:n]
+    drift = _smooth_random_curve(n, max(4, int(n / max(sr * 0.45, 1))), rng)
+    t = np.arange(n, dtype=np.float64) / sr
+    musical = (0.55 * np.sin(2 * np.pi * 0.43 * t + rng.uniform(0, 2 * np.pi)) +
+               0.30 * np.sin(2 * np.pi * 1.17 * t + rng.uniform(0, 2 * np.pi)) +
+               0.15 * drift)
+    # At most about +/- 1.8% on voiced material; no pitch/time warping.
+    gain = 1.0 + gate.astype(np.float64) * (0.018 * musical)
+    return _peak_limit(x.astype(np.float64) * gain)
 
 
 def sparkle(x: np.ndarray, sr: int) -> np.ndarray:
@@ -273,7 +301,9 @@ def breath(x: np.ndarray, sr: int, amount: float = 1.0) -> np.ndarray:
     """
     _require_numpy()
     n = len(x)
-    win = max(8, int(0.02 * sr))
+    if n < 8:
+        return x
+    win = min(n, max(8, int(0.02 * sr)))
     env = np.sqrt(np.convolve(x.astype(np.float64) ** 2, np.ones(win) / win, mode="same"))
     thr = 0.04 * (float(np.max(env)) + 1e-12)
     quiet = env < thr
@@ -302,59 +332,54 @@ def breath(x: np.ndarray, sr: int, amount: float = 1.0) -> np.ndarray:
 
 
 def lift(x: np.ndarray, sr: int) -> np.ndarray:
-    """Phrase-level intonation & swell: each phrase gets a pitch accent on a
-    cycling contour (+0.4 … -0.35 st) and a small loudness swell — speech that
-    wanders instead of droning."""
+    """Give phrases a tiny, smooth emphasis contour without pitch-warping them.
+
+    Pitch-shifting every phrase after synthesis is a common source of metallic
+    seams. Intonation should come from the TTS model and punctuation; this
+    optional post-effect only adds a barely audible phrase-level swell.
+    """
     _require_numpy()
     n = len(x)
-    win = max(8, int(0.02 * sr))
-    env = np.sqrt(np.convolve(x.astype(np.float64) ** 2, np.ones(win) / win, mode="same"))
-    thr = 0.05 * (float(np.max(env)) + 1e-12)
-    quiet = env < thr
-    gap_min = int(0.1 * sr)
-    phrases: list[tuple[int, int]] = []
-    i = 0
-    while i < n:
-        while i < n and quiet[i]:
-            i += 1
-        a = i
-        run = 0
-        while i < n and ((not quiet[i]) or run < gap_min):
-            run = run + 1 if quiet[i] else 0
-            i += 1
-        if i - a > gap_min:
-            phrases.append((a, i - run if run else i))
-    contour = (0.4, 0.15, -0.15, -0.35)
-    swells = (1.06, 1.0, 0.96, 1.02)
-    out = np.zeros(n)
-    pos = 0
-    for idx, (a, b) in enumerate(phrases):
-        out[pos:a] = x[pos:a]
-        seg = x[a:b].astype(np.float64)
-        st = contour[idx % 4]
-        if abs(st) > 1e-3 and len(seg) > 64:
-            seg = pitch_shift(seg, sr, st)
-            if len(seg) != b - a:
-                seg = np.interp(np.linspace(0.0, len(seg) - 1, b - a),
-                                np.arange(len(seg)), seg)
-        out[a:b] = seg * swells[idx % 4]
-        pos = b
-    out[pos:] = x[pos:]
-    return _peak_limit(out)
+    if n < 64:
+        return x
+    win = min(n, max(8, int(0.02 * sr)))
+    env = np.sqrt(np.convolve(x.astype(np.float64) ** 2,
+                              np.ones(win) / win, mode="same"))
+    threshold = max(float(np.percentile(env, 20)) * 1.8,
+                    float(np.max(env)) * 0.015)
+    voiced = env > threshold
+    # Smooth the gate so a consonant does not switch gain abruptly.
+    smooth = min(n, max(3, int(round(0.045 * sr))))
+    gate = np.convolve(voiced.astype(np.float64),
+                       np.ones(smooth) / smooth, mode="same")
+    # A slow contour is enough to create presence; it must never turn into a
+    # volume pump. Keep the modulation under 3%.
+    t = np.arange(n, dtype=np.float64) / sr
+    contour = 0.012 * np.sin(2 * np.pi * 0.7 * t) + 0.008 * np.sin(2 * np.pi * 1.35 * t + 1.1)
+    return _peak_limit(x.astype(np.float64) * (1.0 + gate * contour))
 
 
-FX_TOKENS = ("robot", "phone", "reverb", "chorus", "echo", "humanize", "lift", "breath", "sparkle", "normalize")
+FX_TOKENS = ("robot", "phone", "reverb", "chorus", "echo", "humanize", "lift", "breath", "sparkle", "normalize", "alive")
+_FX_ALIASES = {"alive": ("humanize", "lift")}
 
 
 def parse_fx(spec: str) -> list[str]:
-    """'robot, reverb' -> ['robot', 'reverb']. Unknown tokens warn + skip
-    (a typo should never kill a whole batch)."""
+    """'robot, reverb' -> ['robot', 'reverb'].
+
+    ``alive`` is deliberately a restrained macro, not a pile of chorus,
+    reverb, and synthetic breath. Unknown tokens warn + skip so one typo never
+    kills a whole batch.
+    """
     out: list[str] = []
     for tok in re.split(r"[,\s]+", (spec or "").strip()):
         if not tok:
             continue
         t = tok.lower()
-        if t in FX_TOKENS:
+        if t in _FX_ALIASES:
+            for expanded in _FX_ALIASES[t]:
+                if expanded not in out:
+                    out.append(expanded)
+        elif t in FX_TOKENS:
             if t not in out:
                 out.append(t)
         else:
@@ -364,6 +389,8 @@ def parse_fx(spec: str) -> list[str]:
 
 
 def apply_fx(x: np.ndarray, sr: int, name: str) -> np.ndarray:
+    if name == "alive":
+        return lift(humanize(x, sr), sr)
     if name == "robot":
         return robot(x, sr)
     if name == "phone":
@@ -425,7 +452,7 @@ def main(argv=None) -> int:
     ap.add_argument("--volume", type=float, default=0.0, help="dB (+6 ~ 2x louder)")
     ap.add_argument("--fx", default="",
                     help="comma-separated tokens: " + ",".join(FX_TOKENS) +
-                         " (e.g. 'robot,reverb' — put normalize last)")
+                         " (e.g. 'alive' or 'reverb,normalize' — put normalize last)")
     args = ap.parse_args(argv)
     if not args.src.exists():
         print(f"error: {args.src} not found", file=sys.stderr)

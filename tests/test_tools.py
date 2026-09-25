@@ -38,6 +38,7 @@ CPU_CONFIG = load_tool("cpu_config", "cpu_config.py")
 PREFLIGHT = load_tool("preflight", "preflight.py")
 PRESETS = load_tool("presets_ingest", "presets_ingest.py")
 PRESETS_AUDIO = load_tool("audio_fx", "audio_fx.py")
+TYPE_UI = load_tool("type_ui", "type_ui.py")
 
 
 def write_wav(path: Path, *, rate: int = 24_000, seconds: float = 4,
@@ -859,6 +860,31 @@ class PresetsIngestTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TypeUiPayloadTests(unittest.TestCase):
+    def test_payload_forwards_repetition_penalty_and_clamps_controls(self):
+        payload = TYPE_UI.build_tts_payload({
+            "text": "  Hello there.  ",
+            "expression": "alive",
+            "top_k": 999,
+            "top_p": -1,
+            "temperature": 99,
+            "speed_factor": 0,
+            "repetition_penalty": 1.11,
+            "text_split_method": "not-a-method",
+        }, "ref.wav", "Reference words")
+        self.assertEqual(payload["text"], "Hello there.")
+        self.assertEqual(payload["prompt_text"], "Reference words")
+        self.assertEqual(payload["top_k"], 100)
+        self.assertEqual(payload["top_p"], 0.05)
+        self.assertEqual(payload["temperature"], 2.0)
+        self.assertEqual(payload["speed_factor"], 0.5)
+        self.assertEqual(payload["repetition_penalty"], 1.11)
+        self.assertEqual(payload["text_split_method"], "cut5")
+
+    def test_alive_fx_macro_is_restrained(self):
+        self.assertEqual(TYPE_UI.audio_fx.parse_fx("alive"), ["humanize", "lift"])
 
 
 class PageScriptTests(unittest.TestCase):

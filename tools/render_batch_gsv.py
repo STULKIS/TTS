@@ -102,7 +102,16 @@ def main() -> None:
                     help="dir holding <char_id>/gpt.ckpt + <char_id>/sovits.safetensors|.pth")
     ap.add_argument("--out", type=Path, default=Path("wavs-gsv"))
     ap.add_argument("--seed", type=int, default=42, help="base RNG seed, pinned per character")
-    ap.add_argument("--speed", type=float, default=1.0, help="speed_factor passed to /tts")
+    ap.add_argument("--speed", type=float, default=0.98, help="speed_factor passed to /tts (0.98 is natural baseline)")
+    ap.add_argument("--temperature", type=float, default=0.82,
+                    help="sampling temperature; keep moderate for clean, human phonemes")
+    ap.add_argument("--top-k", type=int, default=14, dest="top_k")
+    ap.add_argument("--top-p", type=float, default=0.94, dest="top_p")
+    ap.add_argument("--repetition-penalty", type=float, default=1.22, dest="repetition_penalty",
+                    help="discourages looping/flat repetition without over-constraining delivery")
+    ap.add_argument("--text-split-method", default="cut5", choices=[f"cut{i}" for i in range(7)])
+    ap.add_argument("--fragment-interval", type=float, default=0.22,
+                    help="pause between generated fragments in seconds")
     ap.add_argument("--timeout", type=float, default=600.0,
                     help="per-request timeout in seconds (CPU rendering is slow)")
     ap.add_argument("--dry-run", action="store_true",
@@ -185,6 +194,11 @@ def main() -> None:
                 api.tts(out, text=r["text"], text_lang=r["lang"],
                         ref_audio_path=str(wav), prompt_text=prompt_text,
                         prompt_lang=r["lang"], seed=seed, speed_factor=args.speed,
+                        top_k=args.top_k, top_p=args.top_p,
+                        temperature=args.temperature,
+                        repetition_penalty=args.repetition_penalty,
+                        text_split_method=args.text_split_method,
+                        fragment_interval=args.fragment_interval,
                         media_type="wav", streaming_mode="false")
             except (urllib.error.HTTPError, RuntimeError) as e:
                 print(f"[error] {r['id']}: {e}")

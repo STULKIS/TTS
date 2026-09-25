@@ -2,8 +2,9 @@
 """Gacha TTS Studio — the type-and-speak WebUI for GPT-SoVITS.
 
 The full front end: gacha preset catalog (this repo's presets.csv, 1000 lines),
-per-line controls (pitch / speed / volume / FX), character seed packs
-(seeds/: dragon & drake x en/zh/ja/ko) or any uploaded reference clip,
+per-line controls (pitch / speed / volume / FX), natural expression profiles,
+character seed packs (seeds/: dragon & drake x en/zh/ja/ko) or any uploaded
+reference clip,
 type your text, click Speak, play + download.
 
 Runs IN your GPT-SoVITS install (same conda env / integrated package):
@@ -36,6 +37,7 @@ import argparse
 import csv
 import io
 import json
+import math
 import os
 import re
 import sys
@@ -64,6 +66,108 @@ PACE_SPEED = {  # engine-side speed_factor, from PACE_FEATURES semantics
     "Dash": 1.25, "Burst": 1.20, "Lilt": 1.15, "Tick": 1.10, "Pulse": 1.00,
     "Tale": 0.95, "Measure": 0.85, "Drift": 0.80, "Lounge": 0.75, "Pause": 0.70,
 }
+
+# Sampling profiles are intentionally conservative. Very high temperature and
+# unrestricted top-p create unstable phonemes more often than they create human
+# expression; the reference/performance clip and punctuation carry the feeling.
+EXPRESSION_PROFILES = {
+    "natural": {"temperature": 0.82, "top_k": 14, "top_p": 0.94,
+                "repetition_penalty": 1.22, "speed_factor": 0.98},
+    "alive": {"temperature": 1.05, "top_k": 22, "top_p": 0.96,
+              "repetition_penalty": 1.14, "speed_factor": 1.02},
+    "dramatic": {"temperature": 1.12, "top_k": 26, "top_p": 0.98,
+                 "repetition_penalty": 1.12, "speed_factor": 1.0},
+}
+
+
+def _number(value, default: float, low: float, high: float) -> float:
+    """Parse and clamp a browser-provided numeric control safely."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = default
+    if not math.isfinite(number):
+        number = default
+    return max(low, min(high, number))
+
+
+def build_tts_payload(req: dict, ref: str, prompt_text: str) -> dict:
+    """Build the small, validated payload accepted by GPT-SoVITS ``TTS.run``.
+
+    Keep this outside ``build_app`` so it can be tested without importing the
+    user's GPT-SoVITS installation. In particular, do not silently discard the
+    repetition-penalty control: it is one of the most useful anti-robotic knobs.
+    """
+    text = str(req.get("text", "") or "").strip()
+    text_lang = str(req.get("text_lang", "en") or "en")
+    prompt_lang = str(req.get("prompt_lang", "") or text_lang)
+    expression = str(req.get("expression", "natural") or "natural").lower()
+    profile = EXPRESSION_PROFILES.get(expression, EXPRESSION_PROFILES["natural"])
+    try:
+        top_k = int(float(req.get("top_k", profile["top_k"])))
+    except (TypeError, ValueError):
+        top_k = profile["top_k"]
+    try:
+        seed = int(float(req.get("seed", -1)))
+    except (TypeError, ValueError):
+        seed = -1
+    methods = {f"cut{i}" for i in range(7)}
+    split_method = str(req.get("text_split_method", "cut5") or "cut5")
+    if split_method not in methods:
+        split_method = "cut5"
+    return {
+        "text": text,
+        "text_lang": text_lang,
+        "ref_audio_path": ref,
+        "prompt_text": prompt_text,
+        "prompt_lang": prompt_lang,
+        "top_k": max(1, min(100, top_k)),
+        "top_p": _number(req.get("top_p", profile["top_p"]), profile["top_p"], 0.05, 1.0),
+        "temperature": _number(req.get("temperature", profile["temperature"]), profile["temperature"], 0.05, 2.0),
+        "text_split_method": split_method,
+        "fragment_interval": _number(req.get("fragment_interval", 0.22), 0.22, 0.0, 2.0),
+        "batch_size": 1,
+        "batch_threshold": 0.75,
+        "split_bucket": True,
+        "speed_factor": _number(req.get("speed_factor", profile["speed_factor"]), profile["speed_factor"], 0.5, 1.5),
+        "seed": seed,
+        "media_type": "wav",
+        "streaming_mode": False,
+        "parallel_infer": True,
+        "repetition_penalty": _number(req.get("repetition_penalty", profile["repetition_penalty"]),
+                                        profile["repetition_penalty"], 1.0, 2.0),
+    }
+
+
+def collect_tts_audio(result, np, default_sr: int = 24_000) -> tuple[int, object]:
+    """Collect all chunks from a non-streaming GPT-SoVITS result.
+
+    Most versions yield one ``(sample_rate, audio)`` tuple, but split/stream
+    implementations can yield several. Taking only ``next(...)`` used to drop
+    every chunk after the first sentence, making longer speech feel abrupt.
+    """
+    if isinstance(result, tuple) and len(result) == 2 and isinstance(result[0], (int, float)):
+        items = [result]
+    else:
+        items = list(result)
+    arrays = []
+    sr = default_sr
+    for item in items:
+        if isinstance(item, dict):
+            sr = int(item.get("sample_rate", item.get("sr", sr)))
+            data = item.get("audio", item.get("tts_speech"))
+        elif isinstance(item, (tuple, list)) and len(item) >= 2:
+            sr, data = int(item[0]), item[1]
+        else:
+            raise ValueError("GPT-SoVITS returned an unsupported audio chunk")
+        if data is None:
+            continue
+        if hasattr(data, "detach"):
+            data = data.detach().cpu().numpy()
+        arrays.append(np.asarray(data, dtype=np.float32).reshape(-1))
+    if not arrays:
+        raise ValueError("GPT-SoVITS returned no audio")
+    return sr, np.concatenate(arrays)
 
 
 def scan_pack(seeds: Path) -> list[dict]:
@@ -124,22 +228,43 @@ def load_presets(path: Path) -> list[dict]:
 
 
 def _life_score(x, sr) -> float:
-    """0-10 liveliness proxy (level + zero-crossing dynamics) for the UI life
-    lottery: expressive takes score high, flat drones score low."""
+    """Score usable expression, not clipping or hiss, on a 0–10 scale.
+
+    The script lottery should reject a flat take, but the old crest-factor-only
+    score rewarded a clipped consonant or a noisy artifact. This proxy favors
+    changing voiced level and articulation, then subtracts clipping and
+    broadband-noise penalties. It is only a ranking signal, never a quality
+    claim about the speaker.
+    """
     import numpy as np
-    x = np.asarray(x, dtype=np.float64)
-    if x.size < 64:
+    x = np.asarray(x, dtype=np.float64).reshape(-1)
+    if x.size < 64 or not np.isfinite(x).all():
         return 0.0
-    fl = max(8, int(0.04 * sr))
+    peak = float(np.max(np.abs(x)))
+    if peak < 1e-7:
+        return 0.0
+    fl = min(x.size, max(32, int(0.04 * sr)))
     nf = max(1, x.size // fl)
     fr = x[: nf * fl].reshape(nf, fl)
-    rms = np.sqrt((fr ** 2).mean(1)) + 1e-9
+    rms = np.sqrt((fr ** 2).mean(1) + 1e-12)
+    db = 20.0 * np.log10(rms + 1e-9)
+    voiced = rms >= max(float(np.percentile(rms, 18)), peak * 0.012)
+    if not np.any(voiced):
+        return 0.0
+    voiced_db = db[voiced]
+    dynamics = min(1.0, float(np.std(voiced_db)) / 7.0)
+    range_score = min(1.0, max(0.0, float(np.percentile(voiced_db, 90) -
+                                      np.percentile(voiced_db, 20)) / 18.0))
     zcr = (np.diff(np.signbit(fr), axis=1) != 0).mean(1) * float(sr)
-    peak = float(np.max(np.abs(x))) + 1e-9
-    crest = 20.0 * np.log10(peak / (float(np.sqrt(np.mean(x ** 2))) + 1e-9))
-    dyn = float(np.std(rms) / np.mean(rms))
-    zdyn = float(np.std(zcr)) / 1500.0
-    return round(max(0.0, min(10.0, (crest / 6.0 + dyn * 3.0 + zdyn) * 1.6)), 2)
+    articulation = min(1.0, float(np.std(zcr[voiced])) / 950.0)
+    clipped = float(np.mean(np.abs(x) >= 0.995))
+    # Spectral flatness is high for hiss/noise. Only inspect voiced frames.
+    spec = np.abs(np.fft.rfft(fr[voiced] * np.hanning(fl), axis=1)) + 1e-9
+    flatness = np.exp(np.mean(np.log(spec), axis=1)) / np.mean(spec, axis=1)
+    noise_penalty = min(1.0, float(np.median(flatness)) * 1.8)
+    score = 1.0 + 4.0 * dynamics + 2.2 * range_score + 1.8 * articulation
+    score -= 4.0 * min(1.0, clipped * 30.0) + 1.6 * noise_penalty
+    return round(max(0.0, min(10.0, score)), 2)
 
 
 def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: str):
@@ -263,37 +388,19 @@ def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: 
         if not prompt_text:
             return JSONResponse(status_code=400,
                                 content={"message": "prompt_text (verbatim transcript of the reference clip) is required"})
-        text_lang = req.get("text_lang", "en")
-        payload = {
-            "text": req.get("text", ""),
-            "text_lang": text_lang,
-            "ref_audio_path": ref,
-            "prompt_text": prompt_text,
-            "prompt_lang": req.get("prompt_lang", "") or text_lang,
-            "top_k": req.get("top_k", 15),
-            "top_p": req.get("top_p", 1.0),
-            "temperature": req.get("temperature", 1.0),
-            "text_split_method": req.get("text_split_method", "cut5"),
-            "fragment_interval": req.get("fragment_interval", 0.3),
-            "batch_size": 1,
-            "batch_threshold": 0.75,
-            "split_bucket": True,
-            "speed_factor": req.get("speed_factor", 1.0),
-            "seed": req.get("seed", -1),
-            "media_type": "wav",
-            "streaming_mode": False,
-            "parallel_infer": True,
-            "repetition_penalty": 1.35,
-        }
-        if not payload["text"].strip():
+        payload = build_tts_payload(req, ref, prompt_text)
+        if not payload["text"]:
             return JSONResponse(status_code=400, content={"message": "text is required"})
         try:
-            generator = tts_pipeline.run(payload)
-            sr, audio = next(generator)
+            # Consume every non-streaming chunk. Some GPT-SoVITS revisions yield
+            # one tuple per split even with streaming_mode=False.
+            result = tts_pipeline.run(payload)
+            sr, x = collect_tts_audio(result, np)
         except Exception as e:  # surface the real error in the UI
             return JSONResponse(status_code=500, content={"message": f"tts failed: {e}"})
-        # per-line controls: pitch shift + volume (post-hoc DSP), speed was engine-side
-        x = np.asarray(audio, dtype=np.float32).reshape(-1)
+        # Per-line pitch/volume are post-hoc delivery controls; speed and
+        # repetition/sampling controls stay inside the model payload.
+        x = np.asarray(x, dtype=np.float32).reshape(-1)
         try:
             pitch = float(req.get("pitch", 0.0) or 0.0)
             volume = float(req.get("volume", 0.0) or 0.0)
@@ -303,7 +410,10 @@ def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: 
             x = audio_fx.pitch_shift(x, sr, pitch)
         if volume:
             x = audio_fx.apply_volume(x, volume)
-        for name in audio_fx.parse_fx(str(req.get("fx", "") or "")):
+        fx_spec = str(req.get("fx", "") or "")
+        if not fx_spec and str(req.get("expression", "") or "").lower() == "alive":
+            fx_spec = "alive"
+        for name in audio_fx.parse_fx(fx_spec):
             x = audio_fx.apply_fx(x, sr, name)
         # trim the engine's trailing inter-fragment gap (~0.3 s of silence),
         # keeping only a short tail after the last real sound
@@ -456,16 +566,16 @@ a.dl { font-size: .85rem; }
     <div><label>Seed (-1 = random)</label><input type="number" id="seed" value="-1"></div>
     <details id="expr"><summary>Expression &amp; sampling — the life controls</summary>
       <div class="row">
-        <button type="button" id="style-subtle">Subtle</button>
+        <button type="button" id="style-subtle">Natural</button>
         <button type="button" id="style-balanced">Balanced</button>
-        <button type="button" id="style-animated">Animated</button>
-        <button type="button" id="style-fever">Fever</button>
+        <button type="button" id="style-animated">Alive</button>
+        <button type="button" id="style-fever">Dramatic</button>
       </div>
-      <div><label>Temperature (↑ = more expressive)</label>
-        <input type="range" id="temperature" min="0.1" max="1.5" step="0.05" value="1.0"></div>
-      <div><label>top_k</label><input type="range" id="top_k" min="1" max="50" step="1" value="15"></div>
-      <div><label>top_p</label><input type="range" id="top_p" min="0.5" max="1" step="0.05" value="1"></div>
-      <div><label>repetition_penalty (↓ = freer, more natural)</label>
+      <div><label>Temperature <span id="temperaturev">0.82</span> (↑ = more variation)</label>
+        <input type="range" id="temperature" min="0.1" max="1.5" step="0.05" value="0.82"></div>
+      <div><label>top_k <span id="top_kv">14</span></label><input type="range" id="top_k" min="1" max="50" step="1" value="14"></div>
+      <div><label>top_p <span id="top_pv">0.95</span></label><input type="range" id="top_p" min="0.5" max="1" step="0.05" value="0.95"></div>
+      <div><label>repetition_penalty <span id="repv">1.2</span> (↑ = steadier)</label>
         <input type="range" id="rep" min="1" max="2" step="0.05" value="1.2"></div>
       <div><label>Phrasing</label><select id="splitm">
         <option value="cut0">one breath (no splits)</option>
@@ -477,21 +587,22 @@ a.dl { font-size: .85rem; }
         <input type="number" id="gap" value="0.3" min="0.05" max="1" step="0.05"></div>
     </details>
   </div>
+  <div class="clipinfo">Tip: the reference clip gives the voice; a performance take gives it energy. For a human result, start with <b>🔥 Make it alive</b> and avoid stacking robot, phone, or chorus effects.</div>
   <div class="row fx">
     <label><input type="checkbox" id="fx-robot"> robot</label>
     <label><input type="checkbox" id="fx-phone"> phone</label>
     <label><input type="checkbox" id="fx-reverb"> reverb</label>
     <label><input type="checkbox" id="fx-chorus"> chorus</label>
     <label><input type="checkbox" id="fx-echo"> echo</label>
-    <label><input type="checkbox" id="fx-humanize"> humanize</label>
-    <label><input type="checkbox" id="fx-lift"> lift</label>
+    <label><input type="checkbox" id="fx-humanize"> humanize (safe)</label>
+    <label><input type="checkbox" id="fx-lift"> phrase lift (safe)</label>
     <label><input type="checkbox" id="fx-breath"> breath</label>
     <label><input type="checkbox" id="fx-sparkle"> sparkle</label>
     <label><input type="checkbox" id="fx-normalize"> normalize</label>
   </div>
   <div class="row">
     <button id="go">🔊 Speak</button>
-    <button id="alive" type="button" title="animated sampling + humanize + lift + breath + sparkle + chorus">🔥 Make it alive</button>
+    <button id="alive" type="button" title="safe animated sampling + natural micro-dynamics">🔥 Make it alive</button>
     <button id="sample" type="button" class="ghost">↺ Use sample line</button>
     <a id="dl" class="dl" style="display:none">⬇ download wav</a>
     <span id="msg"></span>
@@ -506,7 +617,7 @@ a.dl { font-size: .85rem; }
       <textarea id="scriptq" placeholder="Hi. I'm just testing my voice to see how it sounds.&#10;I want to make sure everything sounds natural and clear."></textarea></div>
   </div>
   <div class="row">
-    <label><input type="checkbox" id="lottery" checked> 🎲 Life lottery — 3 takes per line, keep the liveliest</label>
+    <label><input type="checkbox" id="lottery" checked> 🎲 Life lottery — 3 natural takes per line, keep the liveliest</label>
     <button id="brender">▶ Render script</button>
     <button id="bplayall" type="button" style="display:none">▶▶ Play all</button>
   </div>
@@ -746,26 +857,42 @@ $("go").onclick = async () => {
 function msg(t, isErr) { const m = $("msg"); m.textContent = t; m.className = isErr ? "err" : "ok"; }
 
 const STYLES = {
-  subtle:   { temperature: 0.4, top_k: 10, top_p: 0.8, rep: 1.35, speed: 0.95 },
-  balanced: { temperature: 1.0, top_k: 15, top_p: 1.0, rep: 1.2,  speed: 1.0 },
-  animated: { temperature: 1.15, top_k: 20, top_p: 1.0, rep: 1.15, speed: 1.05 },
-  fever:    { temperature: 1.4, top_k: 30, top_p: 1.0, rep: 1.1,  speed: 1.1 },
+  // Natural is the safe starting point: enough variation to avoid a drone,
+  // enough constraint to avoid unstable phonemes.
+  subtle:   { temperature: 0.82, top_k: 14, top_p: 0.94, rep: 1.22, speed: 0.98 },
+  balanced: { temperature: 0.92, top_k: 16, top_p: 0.95, rep: 1.20, speed: 1.0 },
+  animated: { temperature: 1.05, top_k: 22, top_p: 0.96, rep: 1.14, speed: 1.02 },
+  fever:    { temperature: 1.12, top_k: 26, top_p: 0.98, rep: 1.12, speed: 1.0 },
 };
+function syncSamplingLabels() {
+  ["temperature", "top_k", "top_p", "rep"].forEach(id => {
+    const label = $(id + "v"); if (label) label.textContent = $(id).value;
+  });
+}
+["temperature", "top_k", "top_p", "rep"].forEach(id => {
+  $(id).oninput = syncSamplingLabels;
+});
 Object.keys(STYLES).forEach(name => {
   const b = $("style-" + name);
   if (b) b.onclick = () => {
     const s = STYLES[name];
     $("temperature").value = s.temperature; $("top_k").value = s.top_k;
     $("top_p").value = s.top_p; $("rep").value = s.rep; $("speed").value = s.speed;
-    msg("style: " + name, false);
+    syncSamplingLabels();
+    msg("style: " + (name === "subtle" ? "natural" : name), false);
   };
 });
 $("alive").onclick = () => {
-  $("style-fever").click();
-  ["humanize", "lift", "breath", "sparkle", "chorus"].forEach(f => { $("fx-" + f).checked = true; });
+  // The old button used fever sampling plus chorus and synthetic breath. That
+  // made the result louder, but not more human. Alive now uses the stable
+  // animated profile and only timing-safe micro-dynamics.
+  $("style-animated").click();
+  ["humanize", "lift"].forEach(f => { $("fx-" + f).checked = true; });
+  ["robot", "phone", "chorus", "echo", "breath"].forEach(f => { $("fx-" + f).checked = false; });
   $("splitm").value = "cut5";
-  msg("alive mode on — fever sampling + humanize + lift + breath + sparkle + chorus; hit 🔊 Speak", false);
+  msg("alive mode on — stable animated sampling + natural phrase dynamics; hit 🔊 Speak", false);
 };
+syncSamplingLabels();
 
 // ---- script queue: render N lines one by one, play as they finish ----
 function voiceState() {
