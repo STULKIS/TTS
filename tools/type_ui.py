@@ -231,6 +231,34 @@ def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: 
         if not ref_path.is_file():
             return JSONResponse(status_code=400, content={"message": f"ref_audio_path not found: {ref}"})
         ref = str(ref_path.resolve())
+        # GPT-SoVITS hard-rejects references outside 3-10 s. Fit any take
+        # (pack clip, performance bank, user upload) into the window so the
+        # render never dies with "reference audio is out of range".
+        try:
+            import numpy as _np
+            import soundfile as _sf
+            _info = _sf.info(ref)
+            _dur = _info.frames / max(_info.samplerate, 1)
+            if _dur > 10.0 or _dur < 3.0:
+                _x, _sr = _sf.read(ref, dtype="float32", always_2d=False)
+                if getattr(_x, "ndim", 1) > 1:
+                    _x = _x.mean(axis=1)
+                if _x.shape[0] > int(9.5 * _sr):
+                    # keep the loudest 9.5 s window (O(n) via cumsum)
+                    _c = _np.concatenate([[0.0], _np.cumsum(_x.astype(_np.float64) ** 2)])
+                    _win = int(9.5 * _sr)
+                    _e = _c[_win:] - _c[:-_win]
+                    _start = int(_np.argmax(_e))
+                    _x = _x[_start:_start + _win]
+                else:
+                    _pad = _np.zeros(int(3.2 * _sr), dtype=_np.float32)
+                    _pad[:_x.shape[0]] = _x
+                    _x = _pad
+                _tmp = Path(tempfile.mkdtemp(prefix="reffit_")) / "ref_fit.wav"
+                _sf.write(str(_tmp), _x, _sr)
+                ref = str(_tmp)
+        except Exception:
+            pass  # if audio tooling is missing, let the engine speak for itself
         prompt_text = req.get("prompt_text", "")
         if not prompt_text:
             return JSONResponse(status_code=400,

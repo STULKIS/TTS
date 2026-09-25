@@ -902,3 +902,13 @@ class PerfBankTests(unittest.TestCase):
             txt = w.with_suffix(".txt")
             self.assertTrue(txt.is_file(), w.name + " is missing its transcript sidecar")
             self.assertGreater(len(txt.read_text(encoding="utf-8").strip()), 5)
+
+    def test_perf_takes_in_engine_range(self):
+        import wave
+        from pathlib import Path
+        perf = Path(__file__).resolve().parent.parent / "perf"
+        for w in sorted(perf.glob("*.wav")):
+            with wave.open(str(w), "rb") as f:
+                dur = f.getnframes() / max(f.getframerate(), 1)
+            self.assertTrue(3.0 <= dur <= 10.0,
+                            f"{w.name} is {dur:.1f}s — GPT-SoVITS rejects refs outside 3-10s")
