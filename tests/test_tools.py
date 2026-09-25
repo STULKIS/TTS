@@ -890,3 +890,15 @@ class PageScriptTests(unittest.TestCase):
         used = set(re.findall(r'\$\("([^"]+)"\)', self.script))
         have = set(re.findall(r'id="([^"]+)"', self.html))
         self.assertEqual(sorted(used - have), [], "JS references missing element ids")
+
+
+class PerfBankTests(unittest.TestCase):
+    def test_perf_bank_complete(self):
+        from pathlib import Path
+        perf = Path(__file__).resolve().parent.parent / "perf"
+        wavs = sorted(perf.glob("*.wav"))
+        self.assertGreaterEqual(len(wavs), 10, "performance bank must ship 5 families x 2 voices")
+        for w in wavs:
+            txt = w.with_suffix(".txt")
+            self.assertTrue(txt.is_file(), w.name + " is missing its transcript sidecar")
+            self.assertGreater(len(txt.read_text(encoding="utf-8").strip()), 5)

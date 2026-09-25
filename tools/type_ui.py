@@ -208,7 +208,19 @@ def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: 
         # resolve reference audio: a pack clip (relative to the seeds dir),
         # a plain absolute path, or an uploaded temp file
         ref = req.get("ref_audio_path", "")
-        if ref.startswith("upload:"):
+        if ref.startswith("perf:"):
+            # performance bank take: shipped under <repo>/perf with its transcript
+            perf_dir = seeds.parent / "perf"
+            perf_id = Path(ref[len("perf:"):]).name
+            ref_path = perf_dir / f"{perf_id}.wav"
+            if not ref_path.is_file():
+                return JSONResponse(status_code=400, content={"message": f"performance take not found: {perf_id} (REPAIR.bat restores it)"})
+            side = perf_dir / f"{perf_id}.txt"
+            if side.is_file():
+                req["prompt_text"] = side.read_text(encoding="utf-8").strip()
+            if not req.get("prompt_lang"):
+                req["prompt_lang"] = "en"
+        elif ref.startswith("upload:"):
             ref_path = Path(ref[len("upload:"):])
         else:
             ref_path = Path(ref)
@@ -368,6 +380,26 @@ a.dl { font-size: .85rem; }
       <div><label>Language</label><select id="lang"></select></div>
       <div><label>Clip</label><select id="clip"></select></div>
     </div>
+    <div class="row">
+      <div style="flex:1"><label>Performance — the take its ENERGY is copied from (made with the cloud voice tool)</label>
+        <select id="perf">
+          <option value="">auto — from the preset's mood (default take)</option>
+          <optgroup label="dragon — performance bank">
+            <option value="excite-dragon">🔥 Excited — bouncing off the walls</option>
+            <option value="warm-dragon">🫖 Warm — soft fireside</option>
+            <option value="dramatic-dragon">🎭 Dramatic — stage tragedy</option>
+            <option value="cheer-dragon">🌸 Cheerful — bright greetings</option>
+            <option value="dark-dragon">🌑 Dark — purring menace</option>
+          </optgroup>
+          <optgroup label="drake — performance bank">
+            <option value="excite-drake">🔥 Excited — bouncing off the walls</option>
+            <option value="warm-drake">🫖 Warm — soft fireside</option>
+            <option value="dramatic-drake">🎭 Dramatic — stage tragedy</option>
+            <option value="cheer-drake">🌸 Cheerful — bright greetings</option>
+            <option value="dark-drake">🌑 Dark — purring menace</option>
+          </optgroup>
+        </select></div>
+    </div>
     <div class="clipinfo" id="clipinfo"></div>
   </div>
   <div id="pane-custom" style="display:none">
@@ -446,7 +478,7 @@ a.dl { font-size: .85rem; }
       <textarea id="scriptq" placeholder="Hi. I'm just testing my voice to see how it sounds.&#10;I want to make sure everything sounds natural and clear."></textarea></div>
   </div>
   <div class="row">
-    <label><input type="checkbox" id="lottery"> 🎲 Life lottery — 3 takes per line, keep the liveliest</label>
+    <label><input type="checkbox" id="lottery" checked> 🎲 Life lottery — 3 takes per line, keep the liveliest</label>
     <button id="brender">▶ Render script</button>
     <button id="bplayall" type="button" style="display:none">▶▶ Play all</button>
   </div>
@@ -563,6 +595,18 @@ function renderPresets() {
     `<div class="pbrief">no matches</div>`;
   box.querySelectorAll(".prow").forEach(el => el.onclick = () => applyPreset(+el.dataset.no));
 }
+const PERF_FAM = [
+  ["dark", /dark|yandere|kuudere|tsundere|demon|vampire|villain|edgy|shadow|curse|death|goth|cold|rival|sly|fox|snake|mafia|assassin/i],
+  ["dramatic", /knight|hero|warrior|samurai|lord|king|prince|paladin|ruler|general|legend|epic|battle|boss|commander|captain|viking|noble/i],
+  ["excite", /genki|energetic|hyper|idol|excited|upbeat|punchy|rookie|speed|cheerful|genki|shonen|pirate/i],
+  ["cheer", /cute|sweet|idol|princess|fairy|magical|school|maid|bubbly|smile|bright|moe|kawaii|idol|teen|idolgirl/i],
+  ["warm", /gentle|soft|warm|kind|healer|mother|cozy|bard|narrator|storyteller|mature|calm|senpai|onee|neechan|lady|madam|milf/i],
+];
+function familyFor(p) {
+  const s = (p.name + " " + p["class"] + " " + (p.description || "") + " " + (p.signature || "")).toLowerCase();
+  for (const fam of PERF_FAM) if (fam[1].test(s)) return fam[0];
+  return "warm";
+}
 function applyPreset(no) {
   const p = PRESETS.find(x => x.no === no);
   if (!p) return;
@@ -570,6 +614,14 @@ function applyPreset(no) {
   $("pitch").value = p.pitch_shift;
   $("pitchv").textContent = (p.pitch_shift > 0 ? "+" : "") + p.pitch_shift;
   $("speed").value = p.speed;
+  let perfNote = "";
+  if ($("perf") && (charsSel.value === "dragon" || charsSel.value === "drake")) {
+    const want = familyFor(p) + "-" + charsSel.value;
+    if ($("perf").querySelector('option[value="' + want + '"]')) {
+      $("perf").value = want;
+      perfNote = `performance: ${$("perf").selectedOptions[0].textContent} · `;
+    }
+  }
   $("apreset").style.display = "";
   $("apreset").innerHTML = `<b>#${p.no} ${esc(p.name)}</b> ` +
     `<span class="chip">${esc(p["class"])}</span><span class="chip">${esc(p.gender)}</span>` +
@@ -577,9 +629,9 @@ function applyPreset(no) {
     `<span class="chip">pace: ${esc(p.pace)}</span>` +
     (p.signature ? `<span class="chip">signature</span>` : "") +
     `<div class="pbrief">${esc(p.description)}</div>` +
-    `<div class="pbrief">controls set to its pitch (${(p.pitch_shift > 0 ? "+" : "") + p.pitch_shift} st) ` +
+    `<div class="pbrief">${perfNote}controls set to its pitch (${(p.pitch_shift > 0 ? "+" : "") + p.pitch_shift} st) ` +
     `and pace (speed ${p.speed}). FX is yours to add.</div>`;
-  msg("preset applied", false);
+  msg("preset applied" + (perfNote ? " · " + $("perf").selectedOptions[0].textContent : ""), false);
 }
 $("roll").onclick = () => {
   const matches = PRESETS.filter(presetMatches);
@@ -608,9 +660,14 @@ $("go").onclick = async () => {
   const tab = $("tab-preset").classList.contains("on") ? "preset" : "custom";
   let ref = null, promptText = "", promptLang = "";
   if (tab === "preset") {
-    const c = currentClip();
-    if (!c) { msg("pick a character + language first", true); return; }
-    ref = c.char + "/" + c.clip; promptText = c.transcript; promptLang = c.lang;
+    const pf = ($("perf") && $("perf").value) || "";
+    if (pf) {
+      ref = "perf:" + pf; promptText = "(auto from performance bank)"; promptLang = "en";
+    } else {
+      const c = currentClip();
+      if (!c) { msg("pick a character + language first", true); return; }
+      ref = c.char + "/" + c.clip; promptText = c.transcript; promptLang = c.lang;
+    }
   } else {
     if (!customPath) { msg("upload a reference clip first", true); return; }
     ref = "upload:" + customPath; promptText = $("reftext").value.trim();
@@ -685,10 +742,16 @@ $("alive").onclick = () => {
 // ---- script queue: render N lines one by one, play as they finish ----
 function voiceState() {
   let ref = null, promptText = "", promptLang = "";
-  const c = currentClip();
-  if ($("tab-preset").classList.contains("on") && c) {
-    ref = c.char + "/" + c.clip; promptText = c.transcript; promptLang = c.lang;
-  } else if (customPath) {
+  const pf = ($("perf") && $("perf").value) || "";
+  if ($("tab-preset").classList.contains("on") && pf) {
+    ref = "perf:" + pf; promptText = "(auto from performance bank)"; promptLang = "en";
+  } else {
+    const c = currentClip();
+    if ($("tab-preset").classList.contains("on") && c) {
+      ref = c.char + "/" + c.clip; promptText = c.transcript; promptLang = c.lang;
+    }
+  }
+  if (!ref && customPath) {
     ref = "upload:" + customPath; promptText = $("reftext").value.trim();
     promptLang = $("reflang").value;
   }
