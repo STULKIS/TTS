@@ -266,3 +266,29 @@ training corpus.
 | Text → brand-new timbre, no reference clip | Qwen3-TTS 1.7B-VoiceDesign (needs ~8 GB VRAM) |
 
 **Hard requirement = en + zh + ja + ko with fine-tuning → GPT-SoVITS, no contest.**
+
+
+## Natural delivery — without artificial breathing
+
+The **🔥 Natural delivery** button replaces the old “Make it alive” FX stack.
+It disables all cosmetic FX (including synthetic breath noise, pitch wobble,
+chorus and lift), resets pitch to 0 and speed to 1, uses balanced sampling,
+and keeps the text together for continuous delivery. It preserves an explicitly
+chosen performance reference or a custom upload. If no performance is selected,
+Dragon/Drake use the preset's mood, falling back to Warm.
+
+Use **Performance mood → Natural delivery → Speak**. Warm is a starting point
+for conversation; Excited/Cheerful/Dramatic/Dark are performed alternatives,
+not guarantees of emotion transfer. Natural breaths already in a reference or
+produced by the engine are not removed by this button.
+
+Controls remain available: preset catalog and custom presets; character/reference
+and performance mood; pitch, speed, volume, sampling, seed and phrasing; script
+queue and per-line reroll. FX are optional sound design, not an acting engine.
+The experimental three-take lottery is now off by default: its acoustic-variation
+score cannot judge naturalness, and one take avoids three synthesis passes per
+line. With lottery off, reroll always accepts the new take. The score is measured
+before FX so added noise cannot improve the ranking.
+
+This update fixes the artificial-effects path; it does not replace GPT-SoVITS
+or establish that its output matches the cloud voice samples.

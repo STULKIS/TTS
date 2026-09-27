@@ -20,8 +20,8 @@ Controls:
              waveform intact at the top — loud, never distorted)
   --fx       comma tokens: robot · phone · reverb · chorus · echo · humanize
              · lift · breath · sparkle · normalize (normalize = level to
-             -20 dBFS RMS — put it last in the chain; humanize + lift + breath
-             = the 'alive' trio; sparkle = air)
+             -20 dBFS RMS — put it last in the chain). These are cosmetic
+             effects, not acting controls; breath adds synthetic noise.
 
 Needs numpy (present in the GPT-SoVITS conda env; every other tool in this
 repo is stdlib-only). Reads/writes 16-bit PCM WAV (32-bit float WAV input
@@ -199,10 +199,10 @@ def normalize(x: np.ndarray, target_dbfs: float = -20.0) -> np.ndarray:
 
 
 def humanize(x: np.ndarray, sr: int) -> np.ndarray:
-    """The 'alive' effect: micro tempo drift per 120 ms block + breathing gain.
+    """Cosmetic micro tempo drift per 120 ms block plus gain modulation.
 
-    Cloned speech often sounds flat; this reintroduces the tiny timing and
-    loudness wander of a living speaker. Duration preserved; deterministic.
+    Not natural acting; can introduce audible wobble. Opt-in only.
+    Duration preserved; deterministic.
     """
     _require_numpy()
     rng = np.random.default_rng((len(x) * 2654435761) & 0xFFFFFFFF)

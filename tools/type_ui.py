@@ -124,8 +124,8 @@ def load_presets(path: Path) -> list[dict]:
 
 
 def _life_score(x, sr) -> float:
-    """0-10 liveliness proxy (level + zero-crossing dynamics) for the UI life
-    lottery: expressive takes score high, flat drones score low."""
+    """Experimental acoustic-variation score, NOT a naturalness/acting score.
+    Noise can score highly too; never use this as a quality guarantee."""
     import numpy as np
     x = np.asarray(x, dtype=np.float64)
     if x.size < 64:
@@ -283,7 +283,7 @@ def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: 
             "media_type": "wav",
             "streaming_mode": False,
             "parallel_infer": True,
-            "repetition_penalty": 1.35,
+            "repetition_penalty": req.get("repetition_penalty", 1.2),
         }
         if not payload["text"].strip():
             return JSONResponse(status_code=400, content={"message": "text is required"})
@@ -292,6 +292,7 @@ def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: 
             sr, audio = next(generator)
         except Exception as e:  # surface the real error in the UI
             return JSONResponse(status_code=500, content={"message": f"tts failed: {e}"})
+        raw_score = _life_score(np.asarray(audio).reshape(-1), sr)
         # per-line controls: pitch shift + volume (post-hoc DSP), speed was engine-side
         x = np.asarray(audio, dtype=np.float32).reshape(-1)
         try:
@@ -314,7 +315,7 @@ def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: 
         buf = io.BytesIO()
         sf.write(buf, x, sr, format="WAV")
         return Response(buf.getvalue(), media_type="audio/wav",
-                        headers={"X-Life-Score": str(_life_score(x, sr))})
+                        headers={"X-Life-Score": str(raw_score)})
 
     @APP.post("/api/upload")
     async def upload(request: Request):
@@ -454,21 +455,21 @@ a.dl { font-size: .85rem; }
     <div><label>Volume <span id="volv">0</span> dB</label>
       <input type="range" id="vol" min="-12" max="12" step="1" value="0"></div>
     <div><label>Seed (-1 = random)</label><input type="number" id="seed" value="-1"></div>
-    <details id="expr"><summary>Expression &amp; sampling — the life controls</summary>
+    <details id="expr"><summary>Delivery &amp; sampling</summary>
       <div class="row">
         <button type="button" id="style-subtle">Subtle</button>
         <button type="button" id="style-balanced">Balanced</button>
         <button type="button" id="style-animated">Animated</button>
         <button type="button" id="style-fever">Fever</button>
       </div>
-      <div><label>Temperature (↑ = more expressive)</label>
+      <div><label>Temperature (higher = more variation, also more errors)</label>
         <input type="range" id="temperature" min="0.1" max="1.5" step="0.05" value="1.0"></div>
       <div><label>top_k</label><input type="range" id="top_k" min="1" max="50" step="1" value="15"></div>
       <div><label>top_p</label><input type="range" id="top_p" min="0.5" max="1" step="0.05" value="1"></div>
-      <div><label>repetition_penalty (↓ = freer, more natural)</label>
+      <div><label>Repetition penalty</label>
         <input type="range" id="rep" min="1" max="2" step="0.05" value="1.2"></div>
       <div><label>Phrasing</label><select id="splitm">
-        <option value="cut0">one breath (no splits)</option>
+        <option value="cut0">continuous delivery (no splits)</option>
         <option value="cut4">at commas</option>
         <option value="cut5" selected>at sentence ends (balanced)</option>
         <option value="cut6">small bites</option>
@@ -477,6 +478,7 @@ a.dl { font-size: .85rem; }
         <input type="number" id="gap" value="0.3" min="0.05" max="1" step="0.05"></div>
     </details>
   </div>
+  <p class="clipinfo">Natural delivery uses the reference performance, not added breaths. Optional FX below alter the sound; they do not create acting.</p>
   <div class="row fx">
     <label><input type="checkbox" id="fx-robot"> robot</label>
     <label><input type="checkbox" id="fx-phone"> phone</label>
@@ -485,13 +487,13 @@ a.dl { font-size: .85rem; }
     <label><input type="checkbox" id="fx-echo"> echo</label>
     <label><input type="checkbox" id="fx-humanize"> humanize</label>
     <label><input type="checkbox" id="fx-lift"> lift</label>
-    <label><input type="checkbox" id="fx-breath"> breath</label>
+    <label><input type="checkbox" id="fx-breath"> synthetic breath noise (effect only)</label>
     <label><input type="checkbox" id="fx-sparkle"> sparkle</label>
     <label><input type="checkbox" id="fx-normalize"> normalize</label>
   </div>
   <div class="row">
     <button id="go">🔊 Speak</button>
-    <button id="alive" type="button" title="animated sampling + humanize + lift + breath + sparkle + chorus">🔥 Make it alive</button>
+    <button id="alive" type="button" title="Clear artificial effects and pitch shift; use a performed reference with moderate sampling">🔥 Natural delivery</button>
     <button id="sample" type="button" class="ghost">↺ Use sample line</button>
     <a id="dl" class="dl" style="display:none">⬇ download wav</a>
     <span id="msg"></span>
@@ -506,7 +508,7 @@ a.dl { font-size: .85rem; }
       <textarea id="scriptq" placeholder="Hi. I'm just testing my voice to see how it sounds.&#10;I want to make sure everything sounds natural and clear."></textarea></div>
   </div>
   <div class="row">
-    <label><input type="checkbox" id="lottery" checked> 🎲 Life lottery — 3 takes per line, keep the liveliest</label>
+    <label><input type="checkbox" id="lottery"> 🎲 Experimental variation lottery — 3 takes (slower; not a naturalness judge)</label>
     <button id="brender">▶ Render script</button>
     <button id="bplayall" type="button" style="display:none">▶▶ Play all</button>
   </div>
@@ -761,10 +763,19 @@ Object.keys(STYLES).forEach(name => {
   };
 });
 $("alive").onclick = () => {
-  $("style-fever").click();
-  ["humanize", "lift", "breath", "sparkle", "chorus"].forEach(f => { $("fx-" + f).checked = true; });
-  $("splitm").value = "cut5";
-  msg("alive mode on — fever sampling + humanize + lift + breath + sparkle + chorus; hit 🔊 Speak", false);
+  // Start from the actual performance, not noise, pitch wobble or fever sampling.
+  $("style-balanced").click();
+  ["robot", "phone", "reverb", "chorus", "echo", "humanize", "lift", "breath", "sparkle", "normalize"]
+    .forEach(f => { $("fx-" + f).checked = false; });
+  $("pitch").value = 0; $("pitchv").textContent = "0";
+  $("splitm").value = "cut0";
+  $("gap").value = 0.2;
+  $("lottery").checked = false;
+  if ($("tab-preset").classList.contains("on") && !$("perf").value &&
+      ["dragon", "drake"].includes(charsSel.value)) {
+    $("perf").value = (activePreset ? familyFor(activePreset) : "warm") + "-" + charsSel.value;
+  }
+  msg("Natural delivery: FX off, pitch reset, normal pace, continuous phrasing. Reference performance drives expression; hit 🔊 Speak.", false);
 };
 
 // ---- script queue: render N lines one by one, play as they finish ----
@@ -836,17 +847,17 @@ $("brender").onclick = async () => {
         try {
           const b2 = await batchOne(lines[i]);
           const tail = li.lastChild;
-          if (b2.score > bestScore) {
+          if (!$("lottery").checked || b2.score > bestScore) {
             bestScore = b2.score; url = URL.createObjectURL(b2.blob);
             items[i] = { url, score: bestScore }; a.href = url;
-            tail.textContent = "  life " + bestScore.toFixed(1);
+            tail.textContent = "  variation " + bestScore.toFixed(1);
           } else {
-            tail.textContent = "  life " + bestScore.toFixed(1) + " (reroll was flatter)";
+            tail.textContent = "  variation " + bestScore.toFixed(1) + " (reroll had less variation)";
           }
         } finally { rr.disabled = false; }
       };
       li.append(document.createTextNode(lines[i].slice(0, 60) + " "), play, a, rr,
-                document.createTextNode("  life " + bestScore.toFixed(1)));
+                document.createTextNode("  variation " + bestScore.toFixed(1)));
     } catch (e) {
       li.textContent = lines[i].slice(0, 60) + " … ERROR: " + e;
     }

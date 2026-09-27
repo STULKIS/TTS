@@ -912,3 +912,67 @@ class PerfBankTests(unittest.TestCase):
                 dur = f.getnframes() / max(f.getframerate(), 1)
             self.assertTrue(3.0 <= dur <= 10.0,
                             f"{w.name} is {dur:.1f}s — GPT-SoVITS rejects refs outside 3-10s")
+
+
+class NaturalDeliveryTests(PageScriptTests):
+    def test_natural_button_behavior(self):
+        import re, shutil, subprocess
+        if not shutil.which("node"):
+            self.skipTest("node not available")
+        handler = re.search(r'\$\("alive"\)\.onclick = \(\) => \{.*?\n\};', self.script, re.S).group(0)
+        styles = re.search(r'const STYLES = .*?\n\};', self.script, re.S).group(0)
+        wiring = self.script.split('Object.keys(STYLES).forEach(name => {', 1)[1].split('\n});', 1)[0]
+        js = r'''
+const assert = require('node:assert/strict');
+const elements = {};
+const $ = id => elements[id] ||= {value: '', checked: true, textContent: '',
+  classList: {contains: () => true}, click() { this.onclick(); }};
+const charsSel = {value: 'dragon'};
+let activePreset = null;
+const familyFor = () => 'excite';
+const msg = () => {};
+'''+styles+'\nObject.keys(STYLES).forEach(name => {'+wiring+'\n});\n'+handler+r'''
+$('alive').onclick();
+for (const f of ['robot','phone','reverb','chorus','echo','humanize','lift','breath','sparkle','normalize']) {
+  assert.equal($('fx-'+f).checked, false, f);
+}
+assert.equal($('pitch').value, 0);
+assert.equal($('speed').value, 1);
+assert.equal($('temperature').value, 1);
+assert.equal($('rep').value, 1.2);
+assert.equal($('splitm').value, 'cut0');
+assert.equal($('lottery').checked, false);
+assert.equal($('perf').value, 'warm-dragon');
+$('perf').value = 'dark-drake';
+$('alive').onclick();
+assert.equal($('perf').value, 'dark-drake', 'keep explicit performance');
+$('perf').value = ''; activePreset = {};
+charsSel.value = 'drake'; $('alive').onclick();
+assert.equal($('perf').value, 'excite-drake');
+$('perf').value = ''; $('tab-preset').classList.contains = () => false;
+$('alive').onclick();
+assert.equal($('perf').value, '', 'custom reference must not be replaced');
+$('tab-preset').classList.contains = () => true;
+charsSel.value = 'other'; $('alive').onclick();
+assert.equal($('perf').value, '', 'no invented bank for other characters');
+'''
+        r = subprocess.run(['node', '-e', js], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_lottery_opt_in(self):
+        import re
+        checkbox = re.search(r'<input[^>]*id="lottery"[^>]*>', self.html).group(0)
+        self.assertNotIn('checked', checkbox)
+        self.assertIn('if (!$("lottery").checked || b2.score > bestScore)', self.script)
+
+    def test_engine_controls_and_score(self):
+        import ast
+        src = (ROOT / 'tools' / 'type_ui.py').read_text(encoding='utf-8')
+        tree = ast.parse(src)
+        payload = next(n.value for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                       and any(isinstance(t, ast.Name) and t.id == 'payload' for t in n.targets))
+        rep = next(v for k, v in zip(payload.keys, payload.values)
+                   if isinstance(k, ast.Constant) and k.value == 'repetition_penalty')
+        self.assertEqual(ast.unparse(rep), "req.get('repetition_penalty', 1.2)")
+        self.assertLess(src.index('raw_score = _life_score'), src.index('x = audio_fx.pitch_shift'))
+        self.assertIn('"X-Life-Score": str(raw_score)', src)
