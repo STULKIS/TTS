@@ -292,3 +292,37 @@ before FX so added noise cannot improve the ranking.
 
 This update fixes the artificial-effects path; it does not replace GPT-SoVITS
 or establish that its output matches the cloud voice samples.
+
+
+## Render speed — reuse work, not faster speech
+
+- **Reuse matching take** is on by default in Studio. The first render still runs
+  the voice model. Repeating the same text and inference settings reuses that raw
+  take from RAM; changing pitch, volume or FX only reruns post-processing. This
+  intentionally preserves the same performance even with seed -1. Uncheck it if
+  every Speak should generate a new performance. **Fresh take** and per-line
+  reroll always bypass reuse and use a new random seed. The three-take lottery
+  also bypasses reuse so its candidates are actually distinct inference runs.
+- The cache is session-only, capped at **64 MiB / 24 takes**. It stores no audio
+  on disk. Closing Studio clears it. Reference file changes, transcript, language,
+  text, seed and every engine control are part of the key. New text still needs
+  full model inference. Direct API callers must send `reuse_take: true` to opt in.
+- Out-of-range references are fitted once, then reused at a stable path so the
+  engine can retain reference features across script lines. Up to 16 fitted
+  files are kept temporarily and cleaned at normal shutdown.
+- **Sentence batching: 1 / 2 / 4** controls engine throughput, not speaking pace.
+  Start with 2 on the Ryzen 5600G for multi-sentence text, with sentence splitting
+  enabled. If RAM use or latency increases, return to 1 (the safe default).
+  Continuous phrasing is one segment, so batching cannot speed that path up.
+  Separate script lines remain separate outputs; they are not merged or run
+  concurrently on multiple copies of the model.
+- The UI shows **new take / reused take + elapsed seconds** (including queue
+  wait). The API also returns `X-Inference-Seconds`, `X-Render-Seconds`,
+  `X-Total-Seconds` and `X-Take-Cache`. CPU inference runs off the web event loop;
+  status requests remain responsive, while one lock protects the model's shared
+  prompt/random state. Thread limits are applied before NumPy/model loading.
+
+These changes do not quantize the model, change sample rate, discard words, or
+increase the speaking speed. Tests use a counted fake engine to verify skipped
+inference and correctness, not to claim a Ryzen speedup. No real-engine/hardware
+speed multiplier has been measured for this update.

@@ -40,18 +40,24 @@ import os
 import re
 import sys
 import tempfile
+import threading
+import time
+from contextlib import asynccontextmanager
 import uuid
 import wave
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import audio_fx  # noqa: E402
 
 # CPU tuning: half the logical threads (= physical cores). torch defaults to
 # every logical thread and thrashes on SMT CPUs like the Ryzen 5 5600G.
 _THREADS = max(1, (os.cpu_count() or 4) // 2)
 os.environ.setdefault("OMP_NUM_THREADS", str(_THREADS))
 os.environ.setdefault("MKL_NUM_THREADS", str(_THREADS))
+
+# Set BLAS/OpenMP limits BEFORE audio_fx imports numpy.
+import audio_fx  # noqa: E402
+from studio_cache import TakeCache, ReferenceCache, file_version  # noqa: E402
 
 LANGS = {"en": "English", "zh": "Chinese", "ja": "Japanese", "ko": "Korean", "yue": "Cantonese"}
 _CLIP_RE = re.compile(r"^([a-z]+)(\d+)?$")
@@ -131,7 +137,9 @@ def _life_score(x, sr) -> float:
     if x.size < 64:
         return 0.0
     fl = max(8, int(0.04 * sr))
-    nf = max(1, x.size // fl)
+    if x.size < fl:
+        return 0.0
+    nf = x.size // fl
     fr = x[: nf * fl].reshape(nf, fl)
     rms = np.sqrt((fr ** 2).mean(1)) + 1e-9
     zcr = (np.diff(np.signbit(fr), axis=1) != 0).mean(1) * float(sr)
@@ -148,6 +156,7 @@ def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: 
     from GPT_SoVITS.TTS_infer_pack.TTS import TTS, TTS_Config  # noqa: E402
 
     from fastapi import FastAPI, Request  # noqa: E402
+    from starlette.concurrency import run_in_threadpool
     import numpy as np  # noqa: E402
     import soundfile as sf  # noqa: E402
     from fastapi.responses import HTMLResponse, Response, JSONResponse  # noqa: E402
@@ -155,12 +164,12 @@ def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: 
     print(f"[studio] loading GPT-SoVITS pipeline (config={tts_config_path}) ...")
     try:
         tts_config = TTS_Config(tts_config_path)
-        tts_pipeline = TTS(tts_config)
         try:
             import torch
             torch.set_num_threads(_THREADS)
         except Exception:
             pass
+        tts_pipeline = TTS(tts_config)
     except SystemExit:
         raise
     except Exception as e:
@@ -173,7 +182,19 @@ def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: 
     print(f"[studio] ready: version={tts_config.version} languages={tts_config.languages} "
           f"pack={len(pack)} clip(s) under {seeds} · {len(presets_rows)} presets from {presets_path.name}")
 
-    APP = FastAPI()
+    take_cache = TakeCache()
+    reference_cache = ReferenceCache()
+    render_lock = threading.Lock()  # GPT-SoVITS has mutable prompt/RNG state.
+    last_prompt = None
+
+    @asynccontextmanager
+    async def lifespan(app):
+        try:
+            yield
+        finally:
+            reference_cache.close()
+
+    APP = FastAPI(lifespan=lifespan)
     uploads = Path(tempfile.gettempdir()) / "type_ui_uploads"
     uploads.mkdir(exist_ok=True)
 
@@ -194,7 +215,8 @@ def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: 
     async def status():
         return {"ready": True, "version": tts_config.version,
                 "languages": tts_config.languages, "pack": len(pack),
-                "presets": len(presets_rows)}
+                "presets": len(presets_rows), "cpu_threads": _THREADS,
+                "take_cache_mb": take_cache.max_bytes // (1024 * 1024)}
 
     @APP.get("/api/presets")
     async def presets():
@@ -205,6 +227,20 @@ def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: 
     @APP.post("/api/tts")
     async def tts(request: Request):
         req = await request.json()
+        # Do not block status/UI requests during CPU inference. Serialize model
+        # calls: extra concurrent model jobs waste RAM and race its prompt cache.
+        return await run_in_threadpool(render_locked, req)
+
+    def render_locked(req):
+        queued = time.perf_counter()
+        with render_lock:
+            response = render(req)
+            response.headers["X-Total-Seconds"] = f"{time.perf_counter() - queued:.3f}"
+            return response
+
+    def render(req):
+        nonlocal last_prompt
+        started = time.perf_counter()
         # resolve reference audio: a pack clip (relative to the seeds dir),
         # a plain absolute path, or an uploaded temp file
         ref = req.get("ref_audio_path", "")
@@ -231,34 +267,18 @@ def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: 
         if not ref_path.is_file():
             return JSONResponse(status_code=400, content={"message": f"ref_audio_path not found: {ref}"})
         ref = str(ref_path.resolve())
-        # GPT-SoVITS hard-rejects references outside 3-10 s. Fit any take
-        # (pack clip, performance bank, user upload) into the window so the
-        # render never dies with "reference audio is out of range".
+        # A stable fitted path lets GPT-SoVITS reuse reference encoding on each
+        # script line; the old code made a new temp path on every request.
         try:
-            import numpy as _np
-            import soundfile as _sf
-            _info = _sf.info(ref)
-            _dur = _info.frames / max(_info.samplerate, 1)
-            if _dur > 10.0 or _dur < 3.0:
-                _x, _sr = _sf.read(ref, dtype="float32", always_2d=False)
-                if getattr(_x, "ndim", 1) > 1:
-                    _x = _x.mean(axis=1)
-                if _x.shape[0] > int(9.5 * _sr):
-                    # keep the loudest 9.5 s window (O(n) via cumsum)
-                    _c = _np.concatenate([[0.0], _np.cumsum(_x.astype(_np.float64) ** 2)])
-                    _win = int(9.5 * _sr)
-                    _e = _c[_win:] - _c[:-_win]
-                    _start = int(_np.argmax(_e))
-                    _x = _x[_start:_start + _win]
-                else:
-                    _pad = _np.zeros(int(3.2 * _sr), dtype=_np.float32)
-                    _pad[:_x.shape[0]] = _x
-                    _x = _pad
-                _tmp = Path(tempfile.mkdtemp(prefix="reffit_")) / "ref_fit.wav"
-                _sf.write(str(_tmp), _x, _sr)
-                ref = str(_tmp)
-        except Exception:
-            pass  # if audio tooling is missing, let the engine speak for itself
+            source_version = file_version(ref)
+            ref = reference_cache.fit(ref)
+        except Exception as e:
+            return JSONResponse(status_code=400, content={"message": f"cannot read reference audio: {e}"})
+        try:
+            engine_batch = int(req.get("batch_size", 1))
+        except (ValueError, TypeError):
+            engine_batch = 1
+        engine_batch = engine_batch if engine_batch in (1, 2, 4) else 1
         prompt_text = req.get("prompt_text", "")
         if not prompt_text:
             return JSONResponse(status_code=400,
@@ -275,7 +295,7 @@ def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: 
             "temperature": req.get("temperature", 1.0),
             "text_split_method": req.get("text_split_method", "cut5"),
             "fragment_interval": req.get("fragment_interval", 0.3),
-            "batch_size": 1,
+            "batch_size": engine_batch,
             "batch_threshold": 0.75,
             "split_bucket": True,
             "speed_factor": req.get("speed_factor", 1.0),
@@ -287,14 +307,44 @@ def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: 
         }
         if not payload["text"].strip():
             return JSONResponse(status_code=400, content={"message": "text is required"})
-        try:
-            generator = tts_pipeline.run(payload)
-            sr, audio = next(generator)
-        except Exception as e:  # surface the real error in the UI
-            return JSONResponse(status_code=500, content={"message": f"tts failed: {e}"})
-        raw_score = _life_score(np.asarray(audio).reshape(-1), sr)
+        # Key every inference setting, exact text/transcript and source version.
+        # DSP controls intentionally are NOT in this key: reuse raw speech when
+        # tweaking FX. A random seed only reuses a take with explicit UI consent.
+        key_payload = dict(payload, ref_audio_path=source_version)
+        cache_key = json.dumps(key_payload, sort_keys=True, ensure_ascii=False)
+        reuse = req.get("reuse_take", False) is True
+        cached = take_cache.get(cache_key) if reuse else None
+        hit = cached is not None
+        infer_seconds = 0.0
+        if cached is None:
+            # Upstream caches by path/text, not file version or prompt language.
+            prompt_identity = (source_version, prompt_text, payload["prompt_lang"])
+            prompt_cache = getattr(tts_pipeline, "prompt_cache", None)
+            if isinstance(prompt_cache, dict) and last_prompt != prompt_identity:
+                if last_prompt is None or last_prompt[0] != source_version:
+                    prompt_cache["ref_audio_path"] = None
+                prompt_cache["prompt_text"] = None
+            before_infer = time.perf_counter()
+            generator = None
+            try:
+                generator = tts_pipeline.run(payload)
+                sr, audio = next(generator)
+                # Own this buffer: model/DSP mutations must not corrupt a take.
+                raw = np.asarray(audio, dtype=np.float32).reshape(-1).copy()
+            except Exception as e:
+                last_prompt = None
+                return JSONResponse(status_code=500, content={"message": f"tts failed: {e}"})
+            finally:
+                if generator is not None and hasattr(generator, "close"):
+                    generator.close()
+            infer_seconds = time.perf_counter() - before_infer
+            last_prompt = prompt_identity
+            raw_score = _life_score(raw, sr)
+            cached = (sr, raw, raw_score)
+            take_cache.put(cache_key, cached, raw.nbytes)
+        sr, raw, raw_score = cached
         # per-line controls: pitch shift + volume (post-hoc DSP), speed was engine-side
-        x = np.asarray(audio, dtype=np.float32).reshape(-1)
+        x = raw.copy()
         try:
             pitch = float(req.get("pitch", 0.0) or 0.0)
             volume = float(req.get("volume", 0.0) or 0.0)
@@ -315,7 +365,10 @@ def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: 
         buf = io.BytesIO()
         sf.write(buf, x, sr, format="WAV")
         return Response(buf.getvalue(), media_type="audio/wav",
-                        headers={"X-Life-Score": str(raw_score)})
+                        headers={"X-Life-Score": str(raw_score),
+                                 "X-Take-Cache": "hit" if hit else "miss",
+                                 "X-Inference-Seconds": f"{infer_seconds:.3f}",
+                                 "X-Render-Seconds": f"{time.perf_counter() - started:.3f}"})
 
     @APP.post("/api/upload")
     async def upload(request: Request):
@@ -455,6 +508,9 @@ a.dl { font-size: .85rem; }
     <div><label>Volume <span id="volv">0</span> dB</label>
       <input type="range" id="vol" min="-12" max="12" step="1" value="0"></div>
     <div><label>Seed (-1 = random)</label><input type="number" id="seed" value="-1"></div>
+    <div><label>Sentence batching (render speed, not speaking pace)</label>
+      <select id="enginebatch"><option value="1" selected>1 · lowest RAM</option>
+        <option value="2">2 · try for longer text</option><option value="4">4 · higher RAM</option></select></div>
     <details id="expr"><summary>Delivery &amp; sampling</summary>
       <div class="row">
         <button type="button" id="style-subtle">Subtle</button>
@@ -479,6 +535,8 @@ a.dl { font-size: .85rem; }
     </details>
   </div>
   <p class="clipinfo">Natural delivery uses the reference performance, not added breaths. Optional FX below alter the sound; they do not create acting.</p>
+  <label><input type="checkbox" id="reuse" checked> Reuse matching take — repeat text or adjust FX without resynthesizing</label>
+  <p class="clipinfo">Fresh take / per-line reroll always synthesize again. Sentence batching only helps text with multiple split segments; continuous phrasing stays one segment.</p>
   <div class="row fx">
     <label><input type="checkbox" id="fx-robot"> robot</label>
     <label><input type="checkbox" id="fx-phone"> phone</label>
@@ -493,6 +551,7 @@ a.dl { font-size: .85rem; }
   </div>
   <div class="row">
     <button id="go">🔊 Speak</button>
+    <button id="fresh" type="button">🎲 Fresh take</button>
     <button id="alive" type="button" title="Clear artificial effects and pitch shift; use a performed reference with moderate sampling">🔥 Natural delivery</button>
     <button id="sample" type="button" class="ghost">↺ Use sample line</button>
     <a id="dl" class="dl" style="display:none">⬇ download wav</a>
@@ -686,7 +745,7 @@ $("vol").oninput = e => $("volv").textContent =
 
 // ---- speak ----
 let lastURL = null;
-$("go").onclick = async () => {
+async function speak(fresh = false) {
   const tab = $("tab-preset").classList.contains("on") ? "preset" : "custom";
   let ref = null, promptText = "", promptLang = "";
   if (tab === "preset") {
@@ -709,18 +768,19 @@ $("go").onclick = async () => {
 
   const fx = ["robot", "phone", "reverb", "chorus", "echo", "humanize", "lift", "breath", "sparkle", "normalize"]
     .filter(f => $("fx-" + f).checked).join(",");
-  const btn = $("go"); btn.disabled = true;
-  msg("synthesizing… (CPU: a few seconds)", false);
+  const btn = $("go"); btn.disabled = true; $("fresh").disabled = true;
+  msg("rendering… (first use loads reference features)", false);
   try {
     const r = await fetch("/api/tts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ref_audio_path: ref, prompt_text: promptText, prompt_lang: promptLang,
-        text, text_lang: $("textlang").value, speed_factor: +$("speed").value, seed: +$("seed").value,
+        text, text_lang: $("textlang").value, speed_factor: +$("speed").value, seed: fresh ? -1 : +$("seed").value,
         pitch: +$("pitch").value, volume: +$("vol").value, fx,
         top_k: +$("top_k").value, top_p: +$("top_p").value,
         temperature: +$("temperature").value, repetition_penalty: +$("rep").value,
-        text_split_method: $("splitm").value, fragment_interval: +$("gap").value }),
+        text_split_method: $("splitm").value, fragment_interval: +$("gap").value,
+        batch_size: +$("enginebatch").value, reuse_take: $("reuse").checked && !fresh }),
     });
     if (!r.ok) {
       const j = await r.json().catch(() => ({}));
@@ -738,13 +798,19 @@ $("go").onclick = async () => {
     dl.href = lastURL;
     dl.download = "gacha-" + (activePreset ? activePreset.no + "-" : "") + Date.now() + ".wav";
     dl.style.display = "";
-    msg("ok", false);
+    msg(renderTiming(r), false);
   } catch (e) {
     msg("error: " + e, true);
   } finally {
-    btn.disabled = false;
+    btn.disabled = false; $("fresh").disabled = false;
   }
-};
+}
+$("go").onclick = () => speak(false);
+$("fresh").onclick = () => speak(true);
+function renderTiming(r) {
+  const seconds = r.headers.get("X-Total-Seconds") || r.headers.get("X-Render-Seconds") || "?";
+  return (r.headers.get("X-Take-Cache") === "hit" ? "reused take" : "new take") + " · " + seconds + "s";
+}
 function msg(t, isErr) { const m = $("msg"); m.textContent = t; m.className = isErr ? "err" : "ok"; }
 
 const STYLES = {
@@ -800,7 +866,7 @@ function fxCsv() {
   return ["robot", "phone", "reverb", "chorus", "echo", "humanize", "lift", "breath", "sparkle", "normalize"]
     .filter(f => $("fx-" + f).checked).join(",");
 }
-async function batchOne(line) {
+async function batchOne(line, fresh = false) {
   const v = voiceState();
   if (!v.ref || !v.promptText) throw new Error("pick a voice first (section 2)");
   const n = $("lottery").checked ? 3 : 1;
@@ -809,22 +875,25 @@ async function batchOne(line) {
     const r = await fetch("/api/tts", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ref_audio_path: v.ref, prompt_text: v.promptText, prompt_lang: v.promptLang,
-        text: line, text_lang: $("textlang").value, speed_factor: +$("speed").value, seed: -1,
+        text: line, text_lang: $("textlang").value, speed_factor: +$("speed").value,
+        seed: n > 1 || fresh ? -1 : +$("seed").value,
         pitch: +$("pitch").value, volume: +$("vol").value, fx: fxCsv(),
         top_k: +$("top_k").value, top_p: +$("top_p").value,
         temperature: +$("temperature").value, repetition_penalty: +$("rep").value,
-        text_split_method: "cut0", fragment_interval: +$("gap").value }),
+        text_split_method: $("splitm").value, fragment_interval: +$("gap").value,
+        batch_size: +$("enginebatch").value, reuse_take: $("reuse").checked && !fresh && n === 1 }),
     });
     if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.message || ("HTTP " + r.status)); }
     const score = parseFloat(r.headers.get("X-Life-Score") || "0");
     const blob = await r.blob();
-    if (!best || score > best.score) best = { blob, score };
+    if (!best || score > best.score) best = { blob, score, timing: renderTiming(r) };
   }
   return best;
 }
 $("brender").onclick = async () => {
   const lines = $("scriptq").value.split("\n").map(s => s.trim()).filter(Boolean).slice(0, 20);
   if (!lines.length) { msg("paste some lines first", true); return; }
+  $("brender").disabled = true;
   const ol = $("queue"); ol.innerHTML = "";
   const items = [];
   for (let i = 0; i < lines.length; i++) {
@@ -841,11 +910,11 @@ $("brender").onclick = async () => {
       play.onclick = () => new Audio(url).play();
       const a = document.createElement("a"); a.href = url; a.download = "line" + (i + 1) + ".wav"; a.textContent = " ⬇ ";
       const rr = document.createElement("button"); rr.type = "button"; rr.textContent = "🎲";
-      rr.title = "reroll — render again, keep it only if livelier";
+      rr.title = "fresh take — bypass reuse (lottery, if enabled, selects by variation)";
       rr.onclick = async () => {
         rr.disabled = true;
         try {
-          const b2 = await batchOne(lines[i]);
+          const b2 = await batchOne(lines[i], true);
           const tail = li.lastChild;
           if (!$("lottery").checked || b2.score > bestScore) {
             bestScore = b2.score; url = URL.createObjectURL(b2.blob);
@@ -857,7 +926,7 @@ $("brender").onclick = async () => {
         } finally { rr.disabled = false; }
       };
       li.append(document.createTextNode(lines[i].slice(0, 60) + " "), play, a, rr,
-                document.createTextNode("  variation " + bestScore.toFixed(1)));
+                document.createTextNode("  " + best.timing + " · variation " + bestScore.toFixed(1)));
     } catch (e) {
       li.textContent = lines[i].slice(0, 60) + " … ERROR: " + e;
     }
@@ -870,11 +939,12 @@ $("brender").onclick = async () => {
       next();
     };
   }
+  $("brender").disabled = false;
   msg("script done — " + items.length + " line(s)", false);
 };
 
 fetch("/api/status").then(r => r.json()).then(j => {
-  $("ver").textContent = `v${j.version} · langs: ${j.languages.join(", ")} · ${j.pack} pack clip(s) · ${j.presets} presets`;
+  $("ver").textContent = `v${j.version} · langs: ${j.languages.join(", ")} · ${j.pack} pack clip(s) · ${j.presets} presets · ${j.cpu_threads} CPU threads`;
   if (String(j.version).toLowerCase().indexOf("stub") >= 0) {
     const b = $("demobanner"); if (b) b.style.display = "";
   }
