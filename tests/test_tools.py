@@ -963,7 +963,7 @@ assert.equal($('perf').value, '', 'no invented bank for other characters');
         import re
         checkbox = re.search(r'<input[^>]*id="lottery"[^>]*>', self.html).group(0)
         self.assertNotIn('checked', checkbox)
-        self.assertIn('if (!$("lottery").checked || b2.score > bestScore)', self.script)
+        self.assertIn("const n = snapshot.lottery ? 3 : 1;", self.script)
 
     def test_engine_controls_and_score(self):
         import ast

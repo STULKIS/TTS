@@ -227,10 +227,13 @@ class SpeedUIContractTests(unittest.TestCase):
         script = src.split('PAGE_HTML = r"""', 1)[1]
         batch = re.search(r'async function batchOne\(.*?\n}', script, re.S).group(0)
         timing = re.search(r'function renderTiming\(.*?\n}', script, re.S).group(0)
+        controls = re.search(r'const CONTROL_FIELDS = .*?\n];', script, re.S).group(0)
+        for name in ('controlValue', 'captureControls', 'captureRequest'):
+            controls += re.search(r'function ' + name + r'\(.*?\n}', script, re.S).group(0)
         prelude = r'''
 const assert = require('node:assert/strict');
 const elements = {};
-const $ = id => elements[id] ||= {value: 1, checked: false};
+const $ = id => elements[id] ||= {value: 1, checked: false, type: 'number'};
 const voiceState = () => ({ref:'dragon/en.wav', promptText:'Reference.', promptLang:'en'});
 const fxCsv = () => '';
 const sent = [];
@@ -240,6 +243,7 @@ const fetch = async (url, opts) => { sent.push(JSON.parse(opts.body)); return {
 '''
         assertions = r'''
 (async () => {
+  $('reuse').type = 'checkbox'; $('lottery').type = 'checkbox'; $('splitm').type = 'select-one';
   $('reuse').checked = true; $('seed').value = 12; $('enginebatch').value = 2;
   $('splitm').value = 'cut5';
   await batchOne('Hello');
@@ -258,12 +262,12 @@ const fetch = async (url, opts) => { sent.push(JSON.parse(opts.body)); return {
   }
 })().catch(e => { console.error(e); process.exit(1); });
 '''
-        result = subprocess.run(['node', '-e', prelude + timing + batch + assertions],
+        result = subprocess.run(['node', '-e', prelude + controls + timing + batch + assertions],
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('seed: fresh ? -1 : +$("seed").value', script)
         self.assertIn('reuse_take: $("reuse").checked && !fresh', script)
-        self.assertIn('await batchOne(lines[i], true)', script)
+        self.assertIn('await batchOne(text, fresh, settings)', script)
 
 
 if __name__ == "__main__":

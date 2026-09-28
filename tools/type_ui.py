@@ -393,7 +393,7 @@ PAGE_HTML = r"""<!doctype html>
 <style>
 :root { color-scheme: light dark; }
 body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 2rem auto;
-       max-width: 50rem; padding: 0 1rem; line-height: 1.5; }
+       max-width: 72rem; padding: 0 1rem; line-height: 1.5; }
 h1 { margin-bottom: .25rem; }
 .sub { opacity: .7; }
 .card { border: 1px solid rgba(128,128,128,.35); border-radius: .75rem;
@@ -431,29 +431,53 @@ input[type=range] { width: 9rem; }
 .fx { display: flex; gap: .9rem; flex-wrap: wrap; align-items: center; }
 .fx label { display: flex; align-items: center; gap: .3rem; margin: 0; font-size: .85rem; }
 a.dl { font-size: .85rem; }
+.controlnav { display:flex; flex-wrap:wrap; gap:1rem; padding:.8rem; border:1px solid #8886; border-radius:.5rem; }
+.controlnav a { color:inherit; }
+fieldset { border:1px solid #8886; border-radius:.5rem; padding:1rem; min-width:0; }
+legend { font-weight:600; }
+#expr { flex:1 1 100%; }
+#expr > div:not(.row) { display:inline-block; margin:.4rem .8rem .4rem 0; vertical-align:top; }
+.controlgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(155px,1fr)); gap:.7rem; }
+.controlgrid input, .controlgrid select { box-sizing:border-box; max-width:100%; width:100%; }
+#queue > li { margin:1rem 0; padding:1rem; border:1px solid #8886; border-radius:.5rem; }
+#queue textarea { min-height:4rem; }
+#queue audio { max-width:35rem; }
+
 </style>
 </head>
 <body>
 <h1>🎮 Gacha TTS Studio</h1>
-<p class="sub">GPT-SoVITS zero-shot · preset catalog · per-line controls. <span id="ver"></span></p>
+<p class="sub">Controls edition · GPT-SoVITS zero-shot · preset catalog · per-line controls. <span id="ver"></span></p>
 <p id="demobanner" class="err" style="display:none">DEMO ENGINE — this preview renders a test tone instead of a real voice (the real models run only on your PC). Good for trying the controls; audio quality says nothing about the real renders.</p>
 
-<div class="card">
+<nav class="controlnav" aria-label="Control menu">
+  <a href="#preset-panel">Preset catalog</a><a href="#voice-panel">Reference &amp; voice traits</a>
+  <a href="#render-panel">Pitch / pace / volume</a><a href="#expr">Delivery &amp; sampling</a>
+  <a href="#fx-panel">FX</a><a href="#custom-panel">My setups</a><a href="#script-panel">Per-line editor</a>
+</nav>
+
+<div class="card" id="preset-panel">
   <h2>1 · Gacha preset — pick the voice design</h2>
   <div class="row">
     <div style="flex:1"><label>Search name or brief</label><input type="text" id="q" placeholder="e.g. gravel, whisper, idol..."></div>
     <div><label>Class</label><select id="cls"></select></div>
+    <div><label>Gender (catalog)</label><select id="genderfilter"><option value="all">all</option></select></div>
+    <div><label>Pitch family</label><select id="pitchfilter"><option value="all">all</option></select></div>
+    <div><label>Pace family</label><select id="pacefilter"><option value="all">all</option></select></div>
     <div><label>Rarity</label>
-      <select id="rar"><option value="all">any</option><option value="3">★</option><option value="4">★★</option><option value="5">★★★</option></select></div>
+      <select id="rar"><option value="all">any</option><option value="3">★★★</option><option value="4">★★★★</option><option value="5">★★★★★</option></select></div>
     <div style="align-self:flex-end"><button id="roll" class="ghost">🎲 ROLL</button></div>
   </div>
   <div class="clipinfo" id="pcount">loading catalog…</div>
+  <p class="clipinfo">Catalog entries are design briefs, not 1,000 separately trained voices. Applying one sets pitch, pace and an available performance reference.</p>
   <div id="plist"></div>
+  <button id="morepresets" type="button" class="ghost">Show more presets</button>
   <div class="apreset" id="apreset" style="display:none"></div>
 </div>
 
-<div class="card">
+<div class="card" id="voice-panel">
   <h2>2 · Voice — the reference it is cloned from</h2>
+  <p><strong>Voice traits — reference-dependent, not synthesis sliders:</strong> age, weight, wet/dry tone, rasp, smokiness, breathiness, fry, nasality, resonance, brightness, accent, whisper and personality. Choose or upload a reference with those qualities. A catalog description does not make this engine redesign a voice.</p>
   <div id="tabs"><button id="tab-preset" class="on" onclick="switchTab('preset')">Preset characters</button>
   <button id="tab-custom" onclick="switchTab('custom')">Any reference clip</button></div>
   <div id="pane-preset">
@@ -463,9 +487,9 @@ a.dl { font-size: .85rem; }
       <div><label>Clip</label><select id="clip"></select></div>
     </div>
     <div class="row">
-      <div style="flex:1"><label>Performance — the take its ENERGY is copied from (made with the cloud voice tool)</label>
+      <div style="flex:1"><label>Performance reference — influences delivery; emotion transfer is not guaranteed</label>
         <select id="perf">
-          <option value="">auto — from the preset's mood (default take)</option>
+          <option value="">Use selected character/language clip</option>
           <optgroup label="dragon — performance bank">
             <option value="excite-dragon">🔥 Excited — bouncing off the walls</option>
             <option value="warm-dragon">🫖 Warm — soft fireside</option>
@@ -494,7 +518,7 @@ a.dl { font-size: .85rem; }
   </div>
 </div>
 
-<div class="card">
+<div class="card" id="render-panel">
   <h2>3 · Your text + controls</h2>
   <div class="row">
     <div style="flex:1"><label>Your text</label><textarea id="text" placeholder="Type anything…"></textarea></div>
@@ -511,7 +535,7 @@ a.dl { font-size: .85rem; }
     <div><label>Sentence batching (render speed, not speaking pace)</label>
       <select id="enginebatch"><option value="1" selected>1 · lowest RAM</option>
         <option value="2">2 · try for longer text</option><option value="4">4 · higher RAM</option></select></div>
-    <details id="expr"><summary>Delivery &amp; sampling</summary>
+    <fieldset id="expr"><legend>Delivery &amp; sampling — all controls</legend>
       <div class="row">
         <button type="button" id="style-subtle">Subtle</button>
         <button type="button" id="style-balanced">Balanced</button>
@@ -519,25 +543,27 @@ a.dl { font-size: .85rem; }
         <button type="button" id="style-fever">Fever</button>
       </div>
       <div><label>Temperature (higher = more variation, also more errors)</label>
-        <input type="range" id="temperature" min="0.1" max="1.5" step="0.05" value="1.0"></div>
-      <div><label>top_k</label><input type="range" id="top_k" min="1" max="50" step="1" value="15"></div>
-      <div><label>top_p</label><input type="range" id="top_p" min="0.5" max="1" step="0.05" value="1"></div>
+        <input type="number" id="temperature" min="0.1" max="1.5" step="0.05" value="1.0"></div>
+      <div><label>top_k</label><input type="number" id="top_k" min="1" max="50" step="1" value="15"></div>
+      <div><label>top_p</label><input type="number" id="top_p" min="0.5" max="1" step="0.05" value="1"></div>
       <div><label>Repetition penalty</label>
-        <input type="range" id="rep" min="1" max="2" step="0.05" value="1.2"></div>
+        <input type="number" id="rep" min="1" max="2" step="0.05" value="1.2"></div>
       <div><label>Phrasing</label><select id="splitm">
         <option value="cut0">continuous delivery (no splits)</option>
-        <option value="cut4">at commas</option>
-        <option value="cut5" selected>at sentence ends (balanced)</option>
-        <option value="cut6">small bites</option>
+        <option value="cut1">group four sentences</option>
+        <option value="cut2">group about 50 characters</option>
+        <option value="cut3">split at Chinese full stops</option>
+        <option value="cut4">split at English periods</option>
+        <option value="cut5" selected>split at punctuation</option>
       </select></div>
       <div><label>Pause between phrases (s)</label>
         <input type="number" id="gap" value="0.3" min="0.05" max="1" step="0.05"></div>
-    </details>
+    </fieldset>
   </div>
   <p class="clipinfo">Natural delivery uses the reference performance, not added breaths. Optional FX below alter the sound; they do not create acting.</p>
   <label><input type="checkbox" id="reuse" checked> Reuse matching take — repeat text or adjust FX without resynthesizing</label>
   <p class="clipinfo">Fresh take / per-line reroll always synthesize again. Sentence batching only helps text with multiple split segments; continuous phrasing stays one segment.</p>
-  <div class="row fx">
+  <div class="row fx" id="fx-panel">
     <label><input type="checkbox" id="fx-robot"> robot</label>
     <label><input type="checkbox" id="fx-phone"> phone</label>
     <label><input type="checkbox" id="fx-reverb"> reverb</label>
@@ -560,18 +586,34 @@ a.dl { font-size: .85rem; }
   <audio id="out" controls style="display:none"></audio>
 </div>
 
-<div class="card">
-  <h2>4 · Script queue — paste up to 20 lines, each its own clip</h2>
+<div class="card" id="custom-panel">
+  <h2>4 · My custom setups</h2>
+  <p class="clipinfo">Save working delivery controls + FX in this browser. Reference selection is separate. Your description is a design note, not an engine instruction; no voice is generated from it.</p>
   <div class="row">
-    <div style="flex:1"><label>One line per row (uses the voice + controls above; renders while you listen)</label>
+    <div><label for="setupname">Setup name</label><input id="setupname" type="text" maxlength="80" placeholder="My dialogue voice"></div>
+    <div><label for="savedsetup">Saved setups</label><select id="savedsetup"></select></div>
+    <button id="savesetup" type="button">Save current controls</button>
+    <button id="loadsetup" type="button">Load</button><button id="deletesetup" type="button" class="ghost">Delete</button>
+  </div>
+  <label for="designnote">Voice design / free-form description (notes only)</label>
+  <textarea id="designnote" placeholder="e.g. mature, dry, warm, slightly gravelly — choose a matching reference separately"></textarea>
+  <span id="setupmsg" role="status"></span>
+</div>
+
+<div class="card" id="script-panel">
+  <h2>5 · Script queue — paste up to 20 lines, each its own clip</h2>
+  <div class="row">
+    <div style="flex:1"><label>Paste one line per row, then prepare editable rows (up to 20)</label>
       <textarea id="scriptq" placeholder="Hi. I'm just testing my voice to see how it sounds.&#10;I want to make sure everything sounds natural and clear."></textarea></div>
   </div>
   <div class="row">
     <label><input type="checkbox" id="lottery"> 🎲 Experimental variation lottery — 3 takes (slower; not a naturalness judge)</label>
-    <button id="brender">▶ Render script</button>
+    <button id="prepare" type="button">1 · Prepare / replace rows</button>
+    <button id="brender">2 · Render rows</button>
     <button id="bplayall" type="button" style="display:none">▶▶ Play all</button>
   </div>
-  <ol id="queue" class="clipinfo"></ol>
+  <p class="clipinfo">Each prepared row has its own voice, text, language, pitch, pace, volume, sampling, phrasing, seed and FX. Top controls are copied when preparing, not read again during rendering. Editing pasted text requires preparing again.</p>
+  <ol id="queue"></ol>
 </div>
 
 <script>
@@ -630,7 +672,7 @@ function showClipInfo() {
   const c = currentClip();
   $("clipinfo").textContent = c ? `“${c.transcript}”` : "";
   if (c) {
-    $("text").value = c.transcript;   // known-good line for this voice/lang — one-click test
+    if (!$("text").value.trim()) $("text").value = c.transcript;
     $("textlang").value = c.lang;
   }
 }
@@ -670,18 +712,24 @@ function presetMatches(p) {
   const rar = $("rar").value;
   if (cls !== "all" && p["class"] !== cls) return false;
   if (rar !== "all" && String(p.rarity) !== rar) return false;
+  for (const [id, key] of [['genderfilter', 'gender'], ['pitchfilter', 'pitch'], ['pacefilter', 'pace']]) {
+    if ($(id).value !== 'all' && p[key] !== $(id).value) return false;
+  }
   if (q && !(p.name.toLowerCase().includes(q) || p.description.toLowerCase().includes(q))) return false;
   return true;
 }
-function renderPresets() {
+let visiblePresets = 24;
+function renderPresets(limit = 24) {
+  visiblePresets = typeof limit === "number" ? limit : 24;
   const matches = PRESETS.filter(presetMatches);
   $("pcount").textContent = matches.length + " / " + PRESETS.length + " presets match";
   const box = $("plist");
-  box.innerHTML = matches.slice(0, 12).map(p =>
+  box.innerHTML = matches.slice(0, visiblePresets).map(p =>
     `<div class="prow" data-no="${p.no}"><b>#${p.no} ${esc(p.name)}</b> ` +
     `<span class="chip">${esc(p["class"])}</span><span class="chip">${"★".repeat(p.rarity)}</span>` +
     `<div class="pbrief">${esc(p.description.slice(0, 120))}…</div></div>`).join("") ||
     `<div class="pbrief">no matches</div>`;
+  $("morepresets").style.display = matches.length > visiblePresets ? "" : "none";
   box.querySelectorAll(".prow").forEach(el => el.onclick = () => applyPreset(+el.dataset.no));
 }
 const PERF_FAM = [
@@ -720,7 +768,7 @@ function applyPreset(no) {
     `<div class="pbrief">${esc(p.description)}</div>` +
     `<div class="pbrief">${perfNote}controls set to its pitch (${(p.pitch_shift > 0 ? "+" : "") + p.pitch_shift} st) ` +
     `and pace (speed ${p.speed}). FX is yours to add.</div>`;
-  msg("preset applied" + (perfNote ? " · " + $("perf").selectedOptions[0].textContent : ""), false);
+  msg("preset applied (pitch, pace and reference mood only)" + (perfNote ? " · " + $("perf").selectedOptions[0].textContent : ""), false);
 }
 $("roll").onclick = () => {
   const matches = PRESETS.filter(presetMatches);
@@ -730,8 +778,14 @@ $("roll").onclick = () => {
 $("q").oninput = renderPresets;
 $("cls").onchange = renderPresets;
 $("rar").onchange = renderPresets;
+['genderfilter', 'pitchfilter', 'pacefilter'].forEach(id => { $(id).onchange = () => renderPresets(); });
+$("morepresets").onclick = () => renderPresets(visiblePresets + 24);
 fetch("/api/presets").then(r => r.json()).then(j => {
   PRESETS = j.presets;
+  for (const [id, key] of [['genderfilter', 'gender'], ['pitchfilter', 'pitch'], ['pacefilter', 'pace']]) {
+    $(id).replaceChildren(new Option('all', 'all'));
+    [...new Set(PRESETS.map(p => p[key]).filter(Boolean))].sort().forEach(v => $(id).add(new Option(v, v)));
+  }
   $("cls").innerHTML = `<option value="all">all</option>` +
     j.classes.map(c => `<option>${esc(c)}</option>`).join("");
   $("pcount").textContent = j.count + " presets loaded";
@@ -866,81 +920,217 @@ function fxCsv() {
   return ["robot", "phone", "reverb", "chorus", "echo", "humanize", "lift", "breath", "sparkle", "normalize"]
     .filter(f => $("fx-" + f).checked).join(",");
 }
-async function batchOne(line, fresh = false) {
+// ---- Explicit control snapshots, saved setups and editable script rows ----
+const CONTROL_FIELDS = [
+  ['textlang', 'text_lang', 'Text language'], ['pitch', 'pitch', 'Pitch (semitones)'],
+  ['speed', 'speed_factor', 'Speaking pace'], ['vol', 'volume', 'Volume (dB)'],
+  ['seed', 'seed', 'Seed (-1 random)'], ['temperature', 'temperature', 'Temperature'],
+  ['top_k', 'top_k', 'Top K'], ['top_p', 'top_p', 'Top P'],
+  ['rep', 'repetition_penalty', 'Repetition penalty'], ['splitm', 'text_split_method', 'Phrasing'],
+  ['gap', 'fragment_interval', 'Phrase pause (seconds)'], ['enginebatch', 'batch_size', 'Sentence batching'],
+  ['reuse', 'reuse_take', 'Reuse matching take'], ['lottery', 'lottery', 'Three-take lottery'],
+];
+const FX_NAMES = ['robot','phone','reverb','chorus','echo','humanize','lift','breath','sparkle','normalize'];
+function controlValue(el) {
+  return el.type === 'checkbox' ? el.checked :
+    ['number', 'range'].includes(el.type) ? Number(el.value) : el.value;
+}
+function captureControls() {
+  const values = Object.fromEntries(CONTROL_FIELDS.map(([id, key]) => [key, controlValue($(id))]));
+  values.fx = fxCsv();
+  return values;
+}
+function captureRequest() {
   const v = voiceState();
-  if (!v.ref || !v.promptText) throw new Error("pick a voice first (section 2)");
-  const n = $("lottery").checked ? 3 : 1;
+  return { ...captureControls(), ref_audio_path: v.ref, prompt_text: v.promptText, prompt_lang: v.promptLang };
+}
+function applyControls(values) {
+  for (const [id, key] of CONTROL_FIELDS) {
+    if (!(key in values)) continue;
+    const el = $(id);
+    if (el.type === 'checkbox') el.checked = values[key] === true;
+    else el.value = values[key];
+  }
+  const fx = String(values.fx || '').split(',');
+  FX_NAMES.forEach(f => { $('fx-' + f).checked = fx.includes(f); });
+  $('pitchv').textContent = $('pitch').value; $('volv').textContent = $('vol').value;
+}
+let savedSetups = {};
+try {
+  const stored = JSON.parse(localStorage.getItem('gacha.delivery.setups.v1') || '{}');
+  if (stored && typeof stored === 'object' && !Array.isArray(stored)) savedSetups = stored;
+} catch (_) { /* Storage can be disabled; saving reports that below. */ }
+function listSetups() {
+  $('savedsetup').replaceChildren(new Option('Choose a saved setup', ''));
+  Object.keys(savedSetups).sort().forEach(name => $('savedsetup').add(new Option(name, name)));
+}
+function persistSetups() {
+  localStorage.setItem('gacha.delivery.setups.v1', JSON.stringify(savedSetups));
+  listSetups();
+}
+$('savesetup').onclick = () => {
+  const name = $('setupname').value.trim();
+  if (!name) { $('setupmsg').textContent = 'Give this setup a name first.'; return; }
+  try {
+    // Define a plain own key even for a name such as "__proto__".
+    Object.defineProperty(savedSetups, name, {value: {controls: captureControls(), note: $('designnote').value},
+      configurable: true, enumerable: true, writable: true});
+    persistSetups(); $('savedsetup').value = name;
+    $('setupmsg').textContent = 'Saved in this browser. Reference voice unchanged.';
+  } catch (e) { $('setupmsg').textContent = 'Could not save: browser storage unavailable or full.'; }
+};
+$('loadsetup').onclick = () => {
+  const name = $('savedsetup').value;
+  if (!Object.hasOwn(savedSetups, name) || !savedSetups[name]?.controls) return;
+  const s = savedSetups[name]; applyControls(s.controls);
+  activePreset = null; $('apreset').style.display = 'none';
+  $('setupname').value = name; $('designnote').value = s.note || '';
+  $('setupmsg').textContent = 'Delivery controls loaded. Choose your reference separately; prepared rows are unchanged.';
+};
+$('deletesetup').onclick = () => {
+  const name = $('savedsetup').value;
+  if (!name) return;
+  try { delete savedSetups[name]; persistSetups(); $('setupmsg').textContent = 'Setup deleted.'; }
+  catch (_) { $('setupmsg').textContent = 'Browser storage unavailable.'; }
+};
+listSetups();
+
+async function batchOne(line, fresh = false, settings = null) {
+  const snapshot = settings || captureRequest();
+  if (!snapshot.ref_audio_path || !snapshot.prompt_text) throw new Error('pick a reference voice first');
+  const n = snapshot.lottery ? 3 : 1;
+  const {lottery, ...payload} = snapshot;
   let best = null;
   for (let k = 0; k < n; k++) {
-    const r = await fetch("/api/tts", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ref_audio_path: v.ref, prompt_text: v.promptText, prompt_lang: v.promptLang,
-        text: line, text_lang: $("textlang").value, speed_factor: +$("speed").value,
-        seed: n > 1 || fresh ? -1 : +$("seed").value,
-        pitch: +$("pitch").value, volume: +$("vol").value, fx: fxCsv(),
-        top_k: +$("top_k").value, top_p: +$("top_p").value,
-        temperature: +$("temperature").value, repetition_penalty: +$("rep").value,
-        text_split_method: $("splitm").value, fragment_interval: +$("gap").value,
-        batch_size: +$("enginebatch").value, reuse_take: $("reuse").checked && !fresh && n === 1 }),
+    const r = await fetch('/api/tts', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({...payload, text: line,
+        seed: n > 1 || fresh ? -1 : payload.seed,
+        reuse_take: payload.reuse_take && !fresh && n === 1}),
     });
-    if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.message || ("HTTP " + r.status)); }
-    const score = parseFloat(r.headers.get("X-Life-Score") || "0");
+    if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.message || ('HTTP ' + r.status)); }
+    const score = parseFloat(r.headers.get('X-Life-Score') || '0');
     const blob = await r.blob();
-    if (!best || score > best.score) best = { blob, score, timing: renderTiming(r) };
+    if (!best || score > best.score) best = {blob, score, timing: renderTiming(r)};
   }
   return best;
 }
-$("brender").onclick = async () => {
-  const lines = $("scriptq").value.split("\n").map(s => s.trim()).filter(Boolean).slice(0, 20);
-  if (!lines.length) { msg("paste some lines first", true); return; }
-  $("brender").disabled = true;
-  const ol = $("queue"); ol.innerHTML = "";
-  const items = [];
-  for (let i = 0; i < lines.length; i++) {
-    const li = document.createElement("li");
-    li.textContent = lines[i].slice(0, 60) + " … rendering";
-    ol.appendChild(li);
-    try {
-      const best = await batchOne(lines[i]);
-      let bestScore = best.score;
-      let url = URL.createObjectURL(best.blob);
-      items.push({ url, score: bestScore });
-      li.innerHTML = "";
-      const play = document.createElement("button"); play.type = "button"; play.textContent = "▶";
-      play.onclick = () => new Audio(url).play();
-      const a = document.createElement("a"); a.href = url; a.download = "line" + (i + 1) + ".wav"; a.textContent = " ⬇ ";
-      const rr = document.createElement("button"); rr.type = "button"; rr.textContent = "🎲";
-      rr.title = "fresh take — bypass reuse (lottery, if enabled, selects by variation)";
-      rr.onclick = async () => {
-        rr.disabled = true;
-        try {
-          const b2 = await batchOne(lines[i], true);
-          const tail = li.lastChild;
-          if (!$("lottery").checked || b2.score > bestScore) {
-            bestScore = b2.score; url = URL.createObjectURL(b2.blob);
-            items[i] = { url, score: bestScore }; a.href = url;
-            tail.textContent = "  variation " + bestScore.toFixed(1);
-          } else {
-            tail.textContent = "  variation " + bestScore.toFixed(1) + " (reroll had less variation)";
-          }
-        } finally { rr.disabled = false; }
-      };
-      li.append(document.createTextNode(lines[i].slice(0, 60) + " "), play, a, rr,
-                document.createTextNode("  " + best.timing + " · variation " + bestScore.toFixed(1)));
-    } catch (e) {
-      li.textContent = lines[i].slice(0, 60) + " … ERROR: " + e;
-    }
+let queueRows = [];
+let queueBusy = false;
+function addOption(select, value, text) { select.add(new Option(text, value)); }
+function prepareRows() {
+  if (queueBusy) return false;
+  const lines = $('scriptq').value.split('\n').map(s => s.trim()).filter(Boolean);
+  if (!lines.length || lines.length > 20) { msg('Paste between 1 and 20 lines; nothing was discarded.', true); return false; }
+  const snapshot = captureRequest();
+  if (!snapshot.ref_audio_path || !snapshot.prompt_text) { msg('Choose a reference voice first.', true); return false; }
+  queueRows.forEach(row => { if (row.url) URL.revokeObjectURL(row.url); });
+  queueRows = []; $('queue').replaceChildren(); $('bplayall').style.display = 'none';
+  lines.forEach((text, index) => {
+    const li = document.createElement('li');
+    const fieldset = document.createElement('fieldset');
+    const legend = document.createElement('legend'); legend.textContent = 'Line ' + (index + 1);
+    const textLabel = document.createElement('label'); textLabel.textContent = 'Text';
+    const input = document.createElement('textarea'); input.value = text; textLabel.append(input);
+    const voiceLabel = document.createElement('label'); voiceLabel.textContent = 'Reference voice for this line';
+    const voice = document.createElement('select');
+    addOption(voice, 'base', 'Copied reference: ' + snapshot.ref_audio_path);
+    PACK.forEach((p, i) => addOption(voice, 'pack:' + i, p.char + ' / ' + p.lang + ' / ' + p.clip));
+    Array.from($('perf').options).filter(o => o.value).forEach(o => addOption(voice, 'perf:' + o.value, o.textContent));
+    voiceLabel.append(voice);
+    const grid = document.createElement('div'); grid.className = 'controlgrid';
+    const controls = {};
+    CONTROL_FIELDS.forEach(([id, key, title]) => {
+      const label = document.createElement('label'); label.textContent = title;
+      const el = $(id).cloneNode(true); el.removeAttribute('id');
+      if (el.type === 'range') el.type = 'number';
+      if (el.type === 'number') el.required = true;
+      if (el.type === 'checkbox') el.checked = snapshot[key]; else el.value = snapshot[key];
+      el.dataset.control = key; controls[key] = el; label.append(el); grid.append(label);
+    });
+    const effects = document.createElement('div'); effects.className = 'row fx';
+    const fxChecks = {};
+    FX_NAMES.forEach(f => {
+      const label = document.createElement('label'); label.textContent = f === 'breath' ? 'synthetic breath noise' : f;
+      const el = document.createElement('input'); el.type = 'checkbox'; el.checked = snapshot.fx.split(',').includes(f);
+      el.dataset.fx = f; fxChecks[f] = el; label.prepend(el); effects.append(label);
+    });
+    const actions = document.createElement('div'); actions.className = 'row';
+    const render = document.createElement('button'); render.type = 'button'; render.textContent = 'Render this line';
+    const fresh = document.createElement('button'); fresh.type = 'button'; fresh.textContent = 'Fresh take';
+    const dl = document.createElement('a'); dl.textContent = 'Download WAV'; dl.style.display = 'none'; dl.download = 'line' + (index + 1) + '.wav';
+    const status = document.createElement('span'); status.setAttribute('role', 'status'); status.textContent = 'Ready — editable before rendering';
+    const audio = document.createElement('audio'); audio.controls = true; audio.style.display = 'none';
+    actions.append(render, fresh, dl); fieldset.append(legend, textLabel, voiceLabel, grid, effects, actions);
+    li.append(fieldset, status, audio); $('queue').append(li);
+    const row = {input, voice, controls, fxChecks, fieldset, status, audio, dl, url:null, base:{...snapshot}};
+    queueRows.push(row);
+    fieldset.oninput = () => { status.textContent = row.url ? 'Settings edited — render to update the audio below.' : 'Ready'; };
+    render.onclick = () => runOneRow(row, false);
+    fresh.onclick = () => runOneRow(row, true);
+  });
+  msg('Rows prepared. Each has its own controls; top controls no longer change them.', false);
+  return true;
+}
+function rowSettings(row) {
+  const settings = {...row.base};
+  for (const [key, el] of Object.entries(row.controls)) {
+    if (!el.reportValidity()) throw new Error('Check the highlighted line control.');
+    settings[key] = controlValue(el);
   }
-  if (items.length) {
-    $("bplayall").style.display = "";
-    $("bplayall").onclick = () => {
-      let i = 0;
-      const next = () => { if (i < items.length) { const au = new Audio(items[i++].url); au.onended = next; au.play(); } };
-      next();
-    };
+  settings.fx = FX_NAMES.filter(f => row.fxChecks[f].checked).join(',');
+  const selected = row.voice.value;
+  if (selected.startsWith('pack:')) {
+    const p = PACK[Number(selected.slice(5))];
+    settings.ref_audio_path = p.char + '/' + p.clip; settings.prompt_text = p.transcript; settings.prompt_lang = p.lang;
+  } else if (selected.startsWith('perf:')) {
+    settings.ref_audio_path = selected; settings.prompt_text = '(auto from performance bank)'; settings.prompt_lang = 'en';
   }
-  $("brender").disabled = false;
-  msg("script done — " + items.length + " line(s)", false);
+  return settings;
+}
+function setQueueBusy(busy) {
+  queueBusy = busy; $('prepare').disabled = busy; $('brender').disabled = busy;
+  queueRows.forEach(row => { row.fieldset.disabled = busy; });
+}
+async function renderRow(row, fresh) {
+  try {
+    const text = row.input.value.trim();
+    if (!text) throw new Error('This line needs text.');
+    const wasDisabled = row.fieldset.disabled;
+    row.fieldset.disabled = false;
+    let settings;
+    try { settings = rowSettings(row); } finally { row.fieldset.disabled = wasDisabled; }
+    row.status.textContent = 'Rendering…';
+    const best = await batchOne(text, fresh, settings);
+    if (row.url) URL.revokeObjectURL(row.url);
+    row.url = URL.createObjectURL(best.blob);
+    row.audio.src = row.url; row.audio.style.display = '';
+    row.dl.href = row.url; row.dl.style.display = '';
+    row.status.textContent = best.timing + ' · variation ' + best.score.toFixed(1);
+    $('bplayall').style.display = '';
+    return true;
+  } catch (e) { row.status.textContent = 'Render failed (previous audio, if any, is unchanged): ' + e.message; return false; }
+}
+async function runOneRow(row, fresh) {
+  if (queueBusy) return;
+  setQueueBusy(true);
+  try { await renderRow(row, fresh); } finally { setQueueBusy(false); }
+}
+$('prepare').onclick = prepareRows;
+$('brender').onclick = async () => {
+  if (queueBusy || (!queueRows.length && !prepareRows())) return;
+  setQueueBusy(true);
+  let completed = 0;
+  try {
+    for (const row of queueRows) if (await renderRow(row, false)) completed++;
+  } finally { setQueueBusy(false); }
+  msg('Script done — ' + completed + '/' + queueRows.length + ' rendered. Failed rows remain editable.', completed !== queueRows.length);
+};
+$('bplayall').onclick = () => {
+  const urls = queueRows.filter(row => row.url).map(row => row.url);
+  let index = 0;
+  const next = () => { if (index < urls.length) { const audio = new Audio(urls[index++]); audio.onended = next; audio.play(); } };
+  next();
 };
 
 fetch("/api/status").then(r => r.json()).then(j => {

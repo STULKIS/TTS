@@ -326,3 +326,49 @@ These changes do not quantize the model, change sample rate, discard words, or
 increase the speaking speed. Tests use a counted fake engine to verify skipped
 inference and correctness, not to claim a Ryzen speedup. No real-engine/hardware
 speed multiplier has been measured for this update.
+
+
+## Controls edition — where the actual controls are
+
+The page starts with a **Control menu** linking directly to each section.
+**Delivery & sampling** is an always-visible panel, not a collapsed disclosure.
+Temperature, top-k, top-p and repetition penalty show editable numeric values.
+The preset catalog supports class, rarity, gender, pitch-family and pace-family
+filters, plus **Show more presets**; it no longer stops at the first 12 matches.
+Phrasing labels match GPT-SoVITS split methods (English periods are `cut4`, all
+punctuation is `cut5`; the unsupported `cut6` choice was removed).
+
+### My custom setups
+
+Name a setup, optionally write a free-form design note, and click **Save current
+controls**. **Load** restores delivery controls and FX; **Delete** removes it.
+Setups live in this browser's local storage and are not edits to `presets.csv`.
+They do not include typed dialogue or reference audio. Choose the reference
+separately. Clearing browser storage removes the saved setups.
+
+A design note does **not** become a model instruction. Age, wet/dry texture,
+rasp, fry, nasality, resonance, accent and similar traits require a suitable
+reference voice. Neither a catalog description nor a saved note creates a new
+voice model. The UI now makes that limitation explicit instead of implying
+those traits have working synthesis sliders.
+
+### Real per-line controls
+
+1. Choose your starting reference and top-level settings.
+2. Paste 1–20 script lines and click **Prepare / replace rows**.
+3. Each row now has editable text, reference (pack/performance/current upload),
+   language, pitch, pace, volume, seed, temperature, top-k, top-p, repetition
+   penalty, phrasing, pause, sentence batching, take reuse, lottery and all FX.
+4. Use **Render this line**, **Fresh take**, or **Render rows**. Listen/download
+   each line individually, or **Play all**. Failed lines stay editable.
+
+Rows copy the top settings when prepared; later changes to the top do not
+silently change their voices/settings. Editing the pasted source requires
+preparing again, which replaces edited rows and their audio. More than 20
+lines is reported rather than silently truncated. Each fresh render replaces
+that row's result (the optional lottery selects among that render's three
+candidates, not against an old clip made with different settings).
+
+The full-page DOM test exercises saved setups, catalog pagination and filtering,
+per-row requests, independent controls, validation, reroll and failure recovery.
+It uses a fake API for correctness testing, not for judging synthesized voice.
