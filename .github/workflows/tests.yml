@@ -87,3 +87,4 @@ jobs:
           $caught = $false
           try { Invoke-Checked $env:ComSpec @('/c', 'exit', '7') } catch { $caught = $true }
           if (-not $caught) { throw 'Installer must stop on a failed native command.' }
+          exit 0
