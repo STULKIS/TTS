@@ -1,0 +1,10 @@
+# Separate environment only. CPU torch/torchaudio 2.8.0 installed from pytorch.org first.
+qwen-tts==0.1.1
+transformers==4.57.3
+accelerate==1.12.0
+numpy>=1.26,<3
+soundfile>=0.12,<1
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+python-multipart>=0.0.18,<1
+psutil>=5.9,<8

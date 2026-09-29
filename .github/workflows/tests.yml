@@ -27,3 +27,64 @@ jobs:
 
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
+
+  seed-pack:
+    name: Seed pack
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate the seed pack against the sample manifest
+        run: python tools/check_seeds.py --seeds seeds --manifest tools/lines.sample.tsv
+
+  studio-api:
+    name: Studio API and speed-path tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install lightweight test dependencies (no model weights)
+        run: python -m pip install numpy soundfile fastapi httpx python-multipart
+      - name: Test cache, reference reuse, CPU serialization and UI payloads
+        run: python -m unittest discover -s tests -v
+
+      - name: Install DOM test dependency
+        run: npm install --prefix "${{ runner.temp }}/studio-dom" --no-audit --no-fund jsdom@26
+      - name: Exercise the complete Studio controls page
+        env:
+          NODE_PATH: ${{ runner.temp }}/studio-dom/node_modules
+        run: |
+          node tests/studio_controls_dom.cjs
+          node tests/studio_design_dom.cjs
+
+  windows-design-installer:
+    name: Windows Voice Designer installer syntax
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse the PowerShell installer without downloading models
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          $ast = [System.Management.Automation.Language.Parser]::ParseFile("$pwd/tools/start_voice_design.ps1", [ref]$tokens, [ref]$errors)
+          if ($errors.Count) { $errors | Format-List; exit 1 }
+          $helper = $ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Checked'}, $true)
+          Invoke-Expression $helper.Extent.Text
+          Invoke-Checked $env:ComSpec @('/c', 'exit', '0')
+          $caught = $false
+          try { Invoke-Checked $env:ComSpec @('/c', 'exit', '7') } catch { $caught = $true }
+          if (-not $caught) { throw 'Installer must stop on a failed native command.' }
+          exit 0

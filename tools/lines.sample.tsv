@@ -1,16 +1,27 @@
 # lines.sample.tsv — tab-separated: id <TAB> char_id <TAB> lang <TAB> text
+# Full grid: 2 characters × 4 languages × 2 lines; every char/lang has a seed pack
+# in seeds/ (validate with: python tools/check_seeds.py --seeds seeds --manifest lines.sample.tsv)
 # Render (CosyVoice path):
+#   python tools/render_batch.py --lines lines.sample.tsv --dry-run
 #   python tools/render_batch.py --lines lines.sample.tsv \
 #          --model_dir pretrained_models/Fun-CosyVoice3-0.5B
 # Render (GPT-SoVITS path, needs fine-tuned per-character models — see local-tts-guide.md):
 #   python tools/render_batch_gsv.py --lines lines.sample.tsv --dry-run
 # Drop a 3-10 s clip + its exact transcript at seeds/<char_id>/<lang>.wav / .txt
-# ja lines: pre-convert to spaced katakana for CosyVoice3 (see my-tts-plan.corrected.md)
+# ja lines: pre-converted to spaced katakana for CosyVoice3 (see my-tts-plan.corrected.md)
 dragon-01	dragon	en	The fate of this world was never already written.
 dragon-02	dragon	en	I have watched colder centuries than yours end over a single cup of tea.
 dragon-03	dragon	zh	这个世界的命运，还没有定数。
 dragon-04	dragon	zh	我说话很慢，但你最好听完。
 dragon-05	dragon	ja	コノ セカイ ノ ウンメイ ワ、マダ カタラレテ モ イナイ ホノ イチ ペン ニ スギナイ。
 dragon-06	dragon	ko	세상의 운명은 아직 정해지지 않았다.
+dragon-07	dragon	ja	ワタシ ハ ユッコリ ハナス。サエマ デ キキテ ホシイ。
+dragon-08	dragon	ko	나는 천천히 말해. 끝까지 들어주었으면 해.
 drake-01	drake	en	You kept me waiting. That was your first mistake.
 drake-02	drake	en	I do not repeat myself. I repeat *you*, badly, for comic effect.
+drake-03	drake	zh	你让我等了。这是你的第一个错误。
+drake-04	drake	zh	我不重复自己。我重复你，而且很蹩脚，纯为搞笑。
+drake-05	drake	ja	マタセタナ。キ ノ サイショウ ノ シパイ ダ。
+drake-06	drake	ja	カエサナイ。カエス ノハ、キ ダ。ヘタクソ ニ、ワライ オ トッテ。
+drake-07	drake	ko	나를 기다리게 했군. 그게 네 첫 번째 실수야.
+drake-08	drake	ko	나는 말을 반복하지 않는다. 반복하는 건 너야. 엉성하게, 웃기게.
