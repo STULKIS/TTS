@@ -58,6 +58,7 @@ os.environ.setdefault("MKL_NUM_THREADS", str(_THREADS))
 # Set BLAS/OpenMP limits BEFORE audio_fx imports numpy.
 import audio_fx  # noqa: E402
 from studio_cache import TakeCache, ReferenceCache, file_version  # noqa: E402
+import voice_design  # lightweight schema; does not import/load torch or Qwen
 
 LANGS = {"en": "English", "zh": "Chinese", "ja": "Japanese", "ko": "Korean", "yue": "Cantonese"}
 _CLIP_RE = re.compile(r"^([a-z]+)(\d+)?$")
@@ -150,10 +151,11 @@ def _life_score(x, sr) -> float:
     return round(max(0.0, min(10.0, (crest / 6.0 + dyn * 3.0 + zdyn) * 1.6)), 2)
 
 
-def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: str):
+def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: str, engine="gsv"):
     # GPT-SoVITS imports (must run inside its environment)
     sys.path.insert(0, str(gsv_root))
-    from GPT_SoVITS.TTS_infer_pack.TTS import TTS, TTS_Config  # noqa: E402
+    if engine == "gsv":
+        from GPT_SoVITS.TTS_infer_pack.TTS import TTS, TTS_Config  # noqa: E402
 
     from fastapi import FastAPI, Request  # noqa: E402
     from starlette.concurrency import run_in_threadpool
@@ -161,15 +163,24 @@ def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: 
     import soundfile as sf  # noqa: E402
     from fastapi.responses import HTMLResponse, Response, JSONResponse  # noqa: E402
 
-    print(f"[studio] loading GPT-SoVITS pipeline (config={tts_config_path}) ...")
+    print(f"[studio] initializing {engine} (config={tts_config_path}) ...")
     try:
-        tts_config = TTS_Config(tts_config_path)
-        try:
-            import torch
-            torch.set_num_threads(_THREADS)
-        except Exception:
-            pass
-        tts_pipeline = TTS(tts_config)
+        designer = None
+        if engine == "qwen-design":
+            from types import SimpleNamespace
+            tts_config = SimpleNamespace(version="Qwen3-VoiceDesign (experimental)", languages=list(voice_design.LANGUAGES))
+            designer = voice_design.VoiceDesigner(_THREADS)
+        elif engine == "gsv":
+            tts_config = TTS_Config(tts_config_path)
+        else:
+            raise ValueError("Unknown engine")
+        if engine == "gsv":
+            try:
+                import torch
+                torch.set_num_threads(_THREADS)
+            except Exception:
+                pass
+        tts_pipeline = TTS(tts_config) if engine == "gsv" else None
     except SystemExit:
         raise
     except Exception as e:
@@ -216,13 +227,79 @@ def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: 
         return {"ready": True, "version": tts_config.version,
                 "languages": tts_config.languages, "pack": len(pack),
                 "presets": len(presets_rows), "cpu_threads": _THREADS,
-                "take_cache_mb": take_cache.max_bytes // (1024 * 1024)}
+                "take_cache_mb": take_cache.max_bytes // (1024 * 1024), "engine": engine,
+                "model_loaded": designer.model is not None if designer else True}
 
     @APP.get("/api/presets")
     async def presets():
         return {"count": len(presets_rows),
                 "classes": sorted({p["class"] for p in presets_rows}),
                 "presets": presets_rows}
+
+    @APP.get("/api/design/schema")
+    async def design_schema():
+        available_gib = None
+        if designer is not None:
+            try:
+                import psutil
+                available_gib = round(psutil.virtual_memory().available / 1024**3, 1)
+            except ImportError:
+                pass
+        return {"engine": engine, "available": designer is not None,
+                "model": voice_design.MODEL_ID, "fields": voice_design.SCHEMA, "available_ram_gib": available_gib,
+                "languages": voice_design.LANGUAGES, "experimental": True}
+
+    @APP.post("/api/design/preview")
+    async def design_preview(request: Request):
+        try:
+            data = await request.json()
+            return {"instruction": voice_design.compile_instruction(data.get("design", {}))}
+        except ValueError as e:
+            return JSONResponse(status_code=400, content={"message": str(e)})
+
+    def render_design(req):
+        import hashlib
+        started = time.perf_counter()
+        if req.get("engine") != "qwen-design":
+            return JSONResponse(status_code=400, content={"message": "This is Voice Designer, not reference cloning. Select the Voice Designer tab."})
+        try:
+            if float(req.get("speed_factor", 1)) != 1 or int(req.get("batch_size", 1)) != 1 or req.get("text_split_method", "cut0") != "cut0":
+                raise ValueError("Voice Designer uses its Acting pace instruction, not GSV speed/splitting/batching. Reset those to 1 / continuous / 1.")
+            instruction = voice_design.compile_instruction(req.get("design", {}))
+            params = voice_design.generation_options(req)
+            cache_key = json.dumps({"model": voice_design.MODEL_ID, "instruction": instruction,
+                "text": req.get("text"), "language": req.get("text_lang"), "seed": req.get("seed", -1),
+                "generation": params}, sort_keys=True, ensure_ascii=False)
+            cached = take_cache.get(cache_key) if req.get("reuse_take") is True else None
+            hit = cached is not None
+            inference_seconds = 0.0
+            if cached is None:
+                before = time.perf_counter()
+                sr, raw, _ = designer.generate(req)
+                inference_seconds = time.perf_counter() - before
+                cached = (sr, raw, _life_score(raw, sr))
+                take_cache.put(cache_key, cached, raw.nbytes)
+            sr, raw, score = cached
+            # Optional legacy sound-design FX remain separate from the voice
+            # instructions. Neutral pitch/volume + no FX leave the model take alone.
+            x = raw.copy()
+            pitch, volume = float(req.get("pitch", 0) or 0), float(req.get("volume", 0) or 0)
+            if pitch: x = audio_fx.pitch_shift(x, sr, pitch)
+            if volume: x = audio_fx.apply_volume(x, volume)
+            for name in audio_fx.parse_fx(str(req.get("fx", "") or "")):
+                x = audio_fx.apply_fx(x, sr, name)
+            x = audio_fx._peak_limit(x)
+            buf = io.BytesIO()
+            sf.write(buf, x, sr, format="WAV")
+            return Response(buf.getvalue(), media_type="audio/wav", headers={
+                "X-Life-Score": str(score), "X-Take-Cache": "hit" if hit else "miss",
+                "X-Inference-Seconds": f"{inference_seconds:.3f}",
+                "X-Render-Seconds": f"{time.perf_counter()-started:.3f}",
+                "X-Design-Instruction-SHA256": hashlib.sha256(instruction.encode()).hexdigest()})
+        except ValueError as e:
+            return JSONResponse(status_code=400, content={"message": str(e)})
+        except Exception as e:
+            return JSONResponse(status_code=503, content={"message": "Voice Designer failed: " + str(e)})
 
     @APP.post("/api/tts")
     async def tts(request: Request):
@@ -241,6 +318,10 @@ def build_app(gsv_root: Path, seeds: Path, presets_path: Path, tts_config_path: 
     def render(req):
         nonlocal last_prompt
         started = time.perf_counter()
+        if designer is not None:
+            return render_design(req)
+        if req.get("engine") == "qwen-design" or req.get("design") is not None:
+            return JSONResponse(status_code=400, content={"message": "Voice Designer is not active in Classic Studio. Close this app and launch VOICE-DESIGN.bat."})
         # resolve reference audio: a pack clip (relative to the seeds dir),
         # a plain absolute path, or an uploaded temp file
         ref = req.get("ref_audio_path", "")
@@ -447,7 +528,7 @@ legend { font-weight:600; }
 </head>
 <body>
 <h1>🎮 Gacha TTS Studio</h1>
-<p class="sub">Controls edition · GPT-SoVITS zero-shot · preset catalog · per-line controls. <span id="ver"></span></p>
+<p class="sub">Controls edition · reference cloning / voice design · preset catalog · per-line controls. <span id="ver"></span></p>
 <p id="demobanner" class="err" style="display:none">DEMO ENGINE — this preview renders a test tone instead of a real voice (the real models run only on your PC). Good for trying the controls; audio quality says nothing about the real renders.</p>
 
 <nav class="controlnav" aria-label="Control menu">
@@ -476,10 +557,20 @@ legend { font-weight:600; }
 </div>
 
 <div class="card" id="voice-panel">
-  <h2>2 · Voice — the reference it is cloned from</h2>
-  <p><strong>Voice traits — reference-dependent, not synthesis sliders:</strong> age, weight, wet/dry tone, rasp, smokiness, breathiness, fry, nasality, resonance, brightness, accent, whisper and personality. Choose or upload a reference with those qualities. A catalog description does not make this engine redesign a voice.</p>
+  <h2>2 · Voice — reference cloning or instruction-driven design</h2>
+  <p><strong>Classic GPT-SoVITS mode uses a reference for voice traits.</strong> The separate Voice Designer mode below uses model instructions for age, weight, wet/dry tone, rasp, smokiness, breathiness, fry, nasality, resonance, brightness, accent, whisper and personality. Choose or upload a reference with those qualities. A catalog description alone does not redesign a GPT-SoVITS voice.</p>
   <div id="tabs"><button id="tab-preset" class="on" onclick="switchTab('preset')">Preset characters</button>
-  <button id="tab-custom" onclick="switchTab('custom')">Any reference clip</button></div>
+  <button id="tab-custom" onclick="switchTab('custom')">Any reference clip</button>
+  <button id="tab-design" disabled onclick="switchTab('design')">Voice Designer · traits + acting</button></div>
+  <div id="pane-design" style="display:none">
+    <p id="design-status" role="status">Loading Voice Designer capabilities…</p>
+    <p><strong>Experimental model instructions, not independent physical sliders.</strong> Requests can be ignored or conflict. Start with a few traits. Laughs, crying, accents and fine textures are especially uncertain. A new render can change speaker identity; this mode does not clone your selected reference.</p>
+    <fieldset id="design-edit"><legend>Voice traits &amp; acting directions — sent to Qwen3 VoiceDesign</legend>
+      <div id="design-fields"></div>
+    </fieldset>
+    <button id="previewdesign" type="button">Show exact model instruction</button>
+    <pre id="design-preview" style="white-space:pre-wrap" aria-live="polite"></pre>
+  </div>
   <div id="pane-preset">
     <div class="row">
       <div><label>Character</label><select id="char"></select></div>
@@ -560,7 +651,7 @@ legend { font-weight:600; }
         <input type="number" id="gap" value="0.3" min="0.05" max="1" step="0.05"></div>
     </fieldset>
   </div>
-  <p class="clipinfo">Natural delivery uses the reference performance, not added breaths. Optional FX below alter the sound; they do not create acting.</p>
+  <p class="clipinfo">Natural delivery disables cosmetic FX. Classic mode uses a reference performance; Voice Designer uses model instructions. Optional FX below alter the sound, not the acting.</p>
   <label><input type="checkbox" id="reuse" checked> Reuse matching take — repeat text or adjust FX without resynthesizing</label>
   <p class="clipinfo">Fresh take / per-line reroll always synthesize again. Sentence batching only helps text with multiple split segments; continuous phrasing stays one segment.</p>
   <div class="row fx" id="fx-panel">
@@ -629,6 +720,88 @@ rebuildByChar();
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const charsSel = $("char"), langSel = $("lang"), clipSel = $("clip");
+let designFields = [];
+let designAvailable = false;
+let studioEngine = 'gsv';
+function buildDesignFields(root, values = {}) {
+  root.replaceChildren();
+  const groups = new Map();
+  for (const field of designFields) {
+    if (!groups.has(field.group)) {
+      const section = document.createElement('details'); section.open = true;
+      const title = document.createElement('summary'); title.textContent = field.group;
+      const grid = document.createElement('div'); grid.className = 'controlgrid';
+      section.append(title, grid); root.append(section); groups.set(field.group, grid);
+    }
+    const label = document.createElement('label');
+    label.textContent = field.label + (field.experimental ? ' · experimental' : ' · requested');
+    const el = document.createElement(field.choices ? 'select' : 'input');
+    el.dataset.design = field.key;
+    if (field.choices) {
+      el.add(new Option('Unspecified — leave to model', ''));
+      field.choices.forEach(v => el.add(new Option(v, v)));
+    } else { el.type = 'text'; el.maxLength = 160; el.placeholder = 'e.g. Brazilian Portuguese accent (not guaranteed)'; }
+    el.value = values[field.key] || '';
+    label.append(el); groups.get(field.group).append(label);
+  }
+  for (const [key, title, max] of [['description', 'Free-form voice design — sent to the model', 1200],
+                                 ['direction', 'Acting direction — sent to the model', 1000],
+                                 ['emphasize', 'Dialogue words to emphasize (soft request)', 240]]) {
+    const label = document.createElement('label'); label.textContent = title;
+    const input = document.createElement('textarea'); input.maxLength = max; input.dataset.design = key;
+    input.value = values[key] || ''; label.append(input); root.append(label);
+  }
+  const label = document.createElement('label'); label.textContent = 'Crying / tearfulness — experimental request';
+  const crying = document.createElement('select'); crying.dataset.design = 'crying';
+  ['', 'none', 'tearful voice', 'speaking through restrained sobs'].forEach(v => crying.add(new Option(v || 'Unspecified', v)));
+  crying.value = values.crying || ''; label.append(crying); root.append(label);
+}
+function readDesignFields(root) {
+  return Object.fromEntries(Array.from(root.querySelectorAll('[data-design]')).map(el => [el.dataset.design, el.value]));
+}
+function enforceDesignMode() {
+  if (studioEngine !== 'qwen-design') return;
+  // Unsupported GSV knobs must not look active or silently alter a design take.
+  for (const [id, value] of [['speed', '1'], ['splitm', 'cut0'], ['enginebatch', '1'], ['gap', '.3']]) {
+    $(id).value = value; $(id).disabled = true;
+    $(id).title = 'Not used by Voice Designer. Use its acting instructions instead.';
+  }
+  for (const name of ['subtle', 'animated', 'fever']) $('style-' + name).disabled = true;
+}
+async function loadDesignControls() {
+  try {
+    const r = await fetch('/api/design/schema');
+    const schema = await r.json();
+    if (!Array.isArray(schema.fields)) throw new Error('Update the Studio backend to load the designer.');
+    designFields = schema.fields; designAvailable = schema.available === true; studioEngine = schema.engine;
+    buildDesignFields($('design-fields'));
+    $('tab-design').disabled = false;
+    $('design-edit').disabled = !designAvailable;
+    $('design-status').textContent = designAvailable ?
+      'Qwen3 VoiceDesign · experimental CPU mode. Traits and acting go into the model. First render loads several GB; new text may be slow. Close Classic Studio first to free RAM.' :
+      'These controls need the separate Voice Designer engine. Close Classic Studio and double-click VOICE-DESIGN.bat. It installs its own runtime and runs a real model test; no terminal commands required.';
+    if (designAvailable) {
+      if (schema.available_ram_gib != null && schema.available_ram_gib < 9) {
+        $('design-status').textContent += ' This machine currently has only ' + schema.available_ram_gib + ' GiB free; model loading is blocked below 9 GiB. You can inspect controls, but not synthesize here until enough RAM is free.';
+      }
+      $('textlang').replaceChildren();
+      Object.entries(schema.languages).forEach(([code, name]) => $('textlang').add(new Option(name, code)));
+      $('textlang').value = 'en';
+      $('tab-preset').disabled = true; $('tab-custom').disabled = true;
+      enforceDesignMode(); switchTab('design');
+    }
+  } catch (e) { $('design-status').textContent = 'Designer controls unavailable: ' + e.message; }
+}
+$('previewdesign').onclick = async () => {
+  try {
+    const r = await fetch('/api/design/preview', {method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({design:readDesignFields($('design-fields'))})});
+    const j = await r.json();
+    $('design-preview').textContent = r.ok ? j.instruction : j.message;
+  } catch (e) { $('design-preview').textContent = 'Preview failed: ' + e.message; }
+};
+loadDesignControls();
+
 
 function fillChars() {
   charsSel.innerHTML = Object.keys(byChar).map(c => `<option>${esc(c)}</option>`).join("");
@@ -697,6 +870,11 @@ $("ref").onchange = async () => {
 };
 
 function switchTab(t) {
+  $("pane-design").style.display = t === "design" ? "" : "none";
+  $("tab-design").classList.toggle("on", t === "design");
+  if (t === "design" && !designAvailable) {
+    $("go").disabled = true; $("fresh").disabled = true;
+  } else { $("go").disabled = false; $("fresh").disabled = false; }
   $("pane-preset").style.display = t === "preset" ? "" : "none";
   $("pane-custom").style.display = t === "custom" ? "" : "none";
   $("tab-preset").classList.toggle("on", t === "preset");
@@ -748,6 +926,14 @@ function applyPreset(no) {
   const p = PRESETS.find(x => x.no === no);
   if (!p) return;
   activePreset = p;
+  if ($("tab-design").classList.contains("on")) {
+    const description = $("design-fields").querySelector('[data-design="description"]');
+    if (description) description.value = p.description;
+    $("pitch").value = 0; $("pitchv").textContent = "0";
+    $("speed").value = 1;
+    msg("Preset description sent to Voice Designer as a soft voice brief; no reference cloning.", false);
+    return;
+  }
   $("pitch").value = p.pitch_shift;
   $("pitchv").textContent = (p.pitch_shift > 0 ? "+" : "") + p.pitch_shift;
   $("speed").value = p.speed;
@@ -802,7 +988,8 @@ let lastURL = null;
 async function speak(fresh = false) {
   const tab = $("tab-preset").classList.contains("on") ? "preset" : "custom";
   let ref = null, promptText = "", promptLang = "";
-  if (tab === "preset") {
+  const designing = $("tab-design").classList.contains("on");
+  if (designing) { promptText = "design"; } else if (tab === "preset") {
     const pf = ($("perf") && $("perf").value) || "";
     if (pf) {
       ref = "perf:" + pf; promptText = "(auto from performance bank)"; promptLang = "en";
@@ -834,7 +1021,9 @@ async function speak(fresh = false) {
         top_k: +$("top_k").value, top_p: +$("top_p").value,
         temperature: +$("temperature").value, repetition_penalty: +$("rep").value,
         text_split_method: $("splitm").value, fragment_interval: +$("gap").value,
-        batch_size: +$("enginebatch").value, reuse_take: $("reuse").checked && !fresh }),
+        batch_size: +$("enginebatch").value, reuse_take: $("reuse").checked && !fresh,
+        engine: designing ? "qwen-design" : "gsv",
+        design: designing ? readDesignFields($("design-fields")) : undefined }),
     });
     if (!r.ok) {
       const j = await r.json().catch(() => ({}));
@@ -938,9 +1127,11 @@ function controlValue(el) {
 function captureControls() {
   const values = Object.fromEntries(CONTROL_FIELDS.map(([id, key]) => [key, controlValue($(id))]));
   values.fx = fxCsv();
+  if ($("tab-design")?.classList?.contains("on")) values.design = readDesignFields($("design-fields"));
   return values;
 }
 function captureRequest() {
+  if ($("tab-design")?.classList?.contains("on")) return {...captureControls(), engine:"qwen-design"};
   const v = voiceState();
   return { ...captureControls(), ref_audio_path: v.ref, prompt_text: v.promptText, prompt_lang: v.promptLang };
 }
@@ -954,6 +1145,8 @@ function applyControls(values) {
   const fx = String(values.fx || '').split(',');
   FX_NAMES.forEach(f => { $('fx-' + f).checked = fx.includes(f); });
   $('pitchv').textContent = $('pitch').value; $('volv').textContent = $('vol').value;
+  if (values.design && designFields.length) buildDesignFields($('design-fields'), values.design);
+  enforceDesignMode();
 }
 let savedSetups = {};
 try {
@@ -997,7 +1190,7 @@ listSetups();
 
 async function batchOne(line, fresh = false, settings = null) {
   const snapshot = settings || captureRequest();
-  if (!snapshot.ref_audio_path || !snapshot.prompt_text) throw new Error('pick a reference voice first');
+  if (snapshot.engine !== 'qwen-design' && (!snapshot.ref_audio_path || !snapshot.prompt_text)) throw new Error('pick a reference voice first');
   const n = snapshot.lottery ? 3 : 1;
   const {lottery, ...payload} = snapshot;
   let best = null;
@@ -1023,7 +1216,8 @@ function prepareRows() {
   const lines = $('scriptq').value.split('\n').map(s => s.trim()).filter(Boolean);
   if (!lines.length || lines.length > 20) { msg('Paste between 1 and 20 lines; nothing was discarded.', true); return false; }
   const snapshot = captureRequest();
-  if (!snapshot.ref_audio_path || !snapshot.prompt_text) { msg('Choose a reference voice first.', true); return false; }
+  if (snapshot.engine !== 'qwen-design' && (!snapshot.ref_audio_path || !snapshot.prompt_text)) { msg('Choose a reference voice first.', true); return false; }
+  if (snapshot.engine === 'qwen-design' && !designAvailable) { msg('Launch VOICE-DESIGN.bat first.', true); return false; }
   queueRows.forEach(row => { if (row.url) URL.revokeObjectURL(row.url); });
   queueRows = []; $('queue').replaceChildren(); $('bplayall').style.display = 'none';
   lines.forEach((text, index) => {
@@ -1034,7 +1228,8 @@ function prepareRows() {
     const input = document.createElement('textarea'); input.value = text; textLabel.append(input);
     const voiceLabel = document.createElement('label'); voiceLabel.textContent = 'Reference voice for this line';
     const voice = document.createElement('select');
-    addOption(voice, 'base', 'Copied reference: ' + snapshot.ref_audio_path);
+    voice.disabled = snapshot.engine === 'qwen-design';
+    addOption(voice, 'base', snapshot.engine === 'qwen-design' ? 'Designed voice (no reference cloning)' : 'Copied reference: ' + snapshot.ref_audio_path);
     PACK.forEach((p, i) => addOption(voice, 'pack:' + i, p.char + ' / ' + p.lang + ' / ' + p.clip));
     Array.from($('perf').options).filter(o => o.value).forEach(o => addOption(voice, 'perf:' + o.value, o.textContent));
     voiceLabel.append(voice);
@@ -1055,15 +1250,17 @@ function prepareRows() {
       const el = document.createElement('input'); el.type = 'checkbox'; el.checked = snapshot.fx.split(',').includes(f);
       el.dataset.fx = f; fxChecks[f] = el; label.prepend(el); effects.append(label);
     });
+    const designBox = document.createElement('div');
+    if (snapshot.engine === 'qwen-design') buildDesignFields(designBox, snapshot.design);
     const actions = document.createElement('div'); actions.className = 'row';
     const render = document.createElement('button'); render.type = 'button'; render.textContent = 'Render this line';
     const fresh = document.createElement('button'); fresh.type = 'button'; fresh.textContent = 'Fresh take';
     const dl = document.createElement('a'); dl.textContent = 'Download WAV'; dl.style.display = 'none'; dl.download = 'line' + (index + 1) + '.wav';
     const status = document.createElement('span'); status.setAttribute('role', 'status'); status.textContent = 'Ready — editable before rendering';
     const audio = document.createElement('audio'); audio.controls = true; audio.style.display = 'none';
-    actions.append(render, fresh, dl); fieldset.append(legend, textLabel, voiceLabel, grid, effects, actions);
+    actions.append(render, fresh, dl); fieldset.append(legend, textLabel, voiceLabel, designBox, grid, effects, actions);
     li.append(fieldset, status, audio); $('queue').append(li);
-    const row = {input, voice, controls, fxChecks, fieldset, status, audio, dl, url:null, base:{...snapshot}};
+    const row = {input, voice, controls, fxChecks, fieldset, status, audio, dl, designBox, url:null, base:{...snapshot}};
     queueRows.push(row);
     fieldset.oninput = () => { status.textContent = row.url ? 'Settings edited — render to update the audio below.' : 'Ready'; };
     render.onclick = () => runOneRow(row, false);
@@ -1074,6 +1271,7 @@ function prepareRows() {
 }
 function rowSettings(row) {
   const settings = {...row.base};
+  if (settings.engine === "qwen-design") settings.design = readDesignFields(row.designBox);
   for (const [key, el] of Object.entries(row.controls)) {
     if (!el.reportValidity()) throw new Error('Check the highlighted line control.');
     settings[key] = controlValue(el);
@@ -1157,11 +1355,12 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=7861)
     ap.add_argument("--bind", default="127.0.0.1")
     ap.add_argument("--tts-config", default="GPT_SoVITS/configs/tts_infer.yaml")
+    ap.add_argument("--engine", choices=["gsv", "qwen-design"], default="gsv")
     ap.add_argument("--open", action="store_true",
                     help="open the browser automatically when the server starts")
     args = ap.parse_args()
 
-    if not (args.gsv_root / "GPT_SoVITS").is_dir():
+    if args.engine == "gsv" and not (args.gsv_root / "GPT_SoVITS").is_dir():
         raise SystemExit(
             f"[abort] {args.gsv_root} does not look like a GPT-SoVITS root "
             f"(no GPT_SoVITS/ dir) — run from the GPT-SoVITS folder or pass --gsv-root")
@@ -1171,7 +1370,8 @@ def main() -> None:
     # and loads pretrained_models relative to cwd). The stock go-webui.bat therefore
     # always `cd /d` into the package root first — do the same, whatever folder
     # this script was launched from.
-    os.chdir(args.gsv_root.resolve())
+    if args.engine == "gsv":
+        os.chdir(args.gsv_root.resolve())
 
     # resolve the tts config against the GSV root as well (default is CWD-relative)
     tts_cfg = Path(args.tts_config)
@@ -1195,7 +1395,7 @@ def main() -> None:
     import uvicorn  # noqa: E402
 
     app = build_app(args.gsv_root.resolve(), args.seeds.resolve(),
-                    args.presets.resolve(), str(tts_cfg))
+                    args.presets.resolve(), str(tts_cfg), engine=args.engine)
     url = f"http://{'127.0.0.1' if args.bind in ('0.0.0.0', '::') else args.bind}:{args.port}"
     if args.open:
         import threading  # noqa: E402

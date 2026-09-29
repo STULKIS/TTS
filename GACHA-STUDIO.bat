@@ -2,6 +2,11 @@
 setlocal
 title Gacha TTS Studio
 cd /d "%~dp0"
+choice /C 12 /N /M "1 = Classic reference voices   2 = Voice Designer traits and acting: "
+if errorlevel 2 (
+    call "%~dp0VOICE-DESIGN.bat"
+    exit /b
+)
 
 REM ============================================================
 REM  Gacha TTS Studio - launcher

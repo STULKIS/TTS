@@ -1,5 +1,13 @@
 # TTS — original character voices, Windows, no NVIDIA GPU
 
+> **Voice traits + acting:** the experimental **Voice Designer** mode now sends
+> descriptions to Qwen3-TTS rather than disguising FX as acting. Double-click
+> `VOICE-DESIGN.bat` for its separate CPU setup, or select option 2 in the Studio
+> launcher. Read [VOICE-DESIGN.md](VOICE-DESIGN.md) first: substantial memory and
+> download requirements; soft instructions, no exact slider/identity guarantee;
+> real-model audio quality and local performance still need validation.
+
+
 Working notes for a fully-local, legally-clean character-voice pipeline (en · zh · ja · ko).
 
 | File | What it is |

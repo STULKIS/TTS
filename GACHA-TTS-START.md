@@ -372,3 +372,19 @@ candidates, not against an old clip made with different settings).
 The full-page DOM test exercises saved setups, catalog pagination and filtering,
 per-row requests, independent controls, validation, reroll and failure recovery.
 It uses a fake API for correctness testing, not for judging synthesized voice.
+
+
+## New: instruction-driven Voice Designer mode (experimental)
+
+The earlier reference-only trait limitations still apply to **Classic
+GPT-SoVITS**, not to the new instruction input. **VOICE-DESIGN.bat** installs a
+separate Qwen3 VoiceDesign CPU runtime; the Studio desktop launcher now offers
+Classic / Voice Designer choices. See **[VOICE-DESIGN.md](VOICE-DESIGN.md)** for
+setup, the actual control contract, memory needs and validation limits.
+
+This mode sends all 58 voice-trait requests, free-form briefs, acting directions,
+emphasis and experimental vocalizations to the model. They are **soft language
+instructions, not calibrated sliders**. Full-model audio/trait quality and Ryzen
+speed remain unverified here; the sandbox cannot fit the model. The installer
+must complete a real local inference test before it marks setup ready.
+It is not an identity-preserving Dragon/Drake editor and is not a speed upgrade.

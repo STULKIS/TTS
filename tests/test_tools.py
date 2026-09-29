@@ -974,5 +974,6 @@ assert.equal($('perf').value, '', 'no invented bank for other characters');
         rep = next(v for k, v in zip(payload.keys, payload.values)
                    if isinstance(k, ast.Constant) and k.value == 'repetition_penalty')
         self.assertEqual(ast.unparse(rep), "req.get('repetition_penalty', 1.2)")
-        self.assertLess(src.index('raw_score = _life_score'), src.index('x = audio_fx.pitch_shift'))
+        classic_render = src[src.index('    def render(req):'):]
+        self.assertLess(classic_render.index('raw_score = _life_score'), classic_render.index('x = audio_fx.pitch_shift'))
         self.assertIn('"X-Life-Score": str(raw_score)', src)
